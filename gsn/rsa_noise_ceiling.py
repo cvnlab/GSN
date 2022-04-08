@@ -6,12 +6,12 @@ import scipy.stats as stats
 from scipy.spatial.distance import pdist
 
 def rsa_noise_ceiling(data,
-                    rdmfun = lambda x: pdist(x.T,'correlation'),
-                    comparefun = lambda x,y: stats.pearsonr(x,y)[0],
-                    numsim = 20,
-                    nctrials = None,
-                    shrinklevels = np.linspace(0,1,51),
-                    mode = 0):
+                     rdmfun = lambda x: pdist(x.T,'correlation'),
+                     comparefun = lambda x,y: stats.pearsonr(x,y)[0],
+                     numsim = 20,
+                     nctrials = None,
+                     shrinklevels = np.linspace(0,1,51),
+                     mode = 0):
     """
     nc, ncdist, results = rsa_noise_ceiling(data,rdmfun,comparefun,numsim,nctrials)
 
