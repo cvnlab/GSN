@@ -42,7 +42,7 @@ def construct_nearest_psd_covariance(c1):
         return c1, rapprox
     
     except:
-        
+                
         # construct nearest PSD matrix (with respect to Frobenius norm)
         u, s, v = np.linalg.svd(c1, full_matrices=True)
         
@@ -54,8 +54,11 @@ def construct_nearest_psd_covariance(c1):
             T = np.linalg.cholesky(c2)
             
         except:
-            
-            print('warning: nearest cov is not PSD! attempting to use recursion to fix this.')
+                        
+            # add a small ridge
+            c2 = c2 + np.eye(c2.shape[0]) * 1e-10 
+                        
+            # recurse
             c2, _ = construct_nearest_psd_covariance(c2)
                 
         # calculate how good the approximation is
