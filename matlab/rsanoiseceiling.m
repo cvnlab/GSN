@@ -1,8 +1,9 @@
-function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nctrials,shrinklevels,mode)
+function [nc,ncdist,results] = rsanoiseceiling(data,wantverbose,rdmfun,comparefun,numsim,nctrials,shrinklevels,mode)
 
-% function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nctrials)
+% function [nc,ncdist,results] = rsanoiseceiling(data,wantverbose,rdmfun,comparefun,numsim,nctrials)
 %
 % <data> is voxels x conditions x trials
+% <wantverbose> (optional) is whether to print status statements. Default: 1.
 % <rdmfun> (optional) is a function that constructs an RDM. Specifically,
 %   the function should accept as input a data matrix (e.g. voxels x conditions)
 %   and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
@@ -55,6 +56,9 @@ function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nct
 %   1 means to omit the gain adjustment
 
 % inputs
+if ~exist('wantverbose','var') || isempty(wantverbose)
+  wantverbose = 1;
+end
 if ~exist('rdmfun','var') || isempty(rdmfun)
   rdmfun = @(data) pdist(data','correlation')';
 end
@@ -79,15 +83,27 @@ nvox   = size(data,1);
 ncond  = size(data,2);
 ntrial = size(data,3);
 
+%% %%%%% ESTIMATION
+
 % estimate noise covariance
+if wantverbose, fprintf('Estimating noise covariance...');, end
 [mnN,cN,shrinklevelN,nllN] = calcshrunkencovariance(permute(data,[3 1 2]),[],shrinklevels,1);
+if wantverbose, fprintf('done.\n');, end
 
 % estimate data covariance
+if wantverbose, fprintf('Estimating data covariance...');, end
 [mnD,cD,shrinklevelD,nllD] = calcshrunkencovariance(mean(data,3)',        [],shrinklevels,1);
+if wantverbose, fprintf('done.\n');, end
 
 % estimate signal covariance
+if wantverbose, fprintf('Estimating signal covariance...');, end
 mnS = mnD - mnN;
 cS  =  cD - cN/ntrial;
+if wantverbose, fprintf('done.\n');, end
+
+%% %%%%% REGULARIZATION
+
+if wantverbose, fprintf('Regularizing...');, end
 
 % calculate nearest approximation for the noise.
 % this is expected to be PSD already. however, small numerical issues
@@ -111,6 +127,12 @@ case 1
   % do nothing
 end
 
+if wantverbose, fprintf('done.\n');, end
+
+%% %%%%% SIMULATIONS
+
+if wantverbose, fprintf('Performing Monte Carlo simulations...');, end
+
 % perform Monte Carlo simulations
 ncdist = zeros(1,numsim);
 for rr=1:numsim
@@ -119,6 +141,10 @@ for rr=1:numsim
   measurement = signal + squish(mean(reshape(noise,[ncond nctrials nvox]),2),2);  % cond x voxels
   ncdist(rr) = comparefun(rdmfun(signal'),rdmfun(measurement'));
 end
+
+if wantverbose, fprintf('done.\n');, end
+
+%% %%%%% FINISH UP
 
 % if comparefun ever outputs NaN, set these cases to 0.
 % for example, you might be correlating an all-zero signal
