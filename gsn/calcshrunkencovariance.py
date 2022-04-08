@@ -1,6 +1,3 @@
-import sys
-sys.path.append('../')
-
 import numpy as np
 import math
 import warnings
@@ -12,73 +9,81 @@ def calcshrunkencovariance(data,
                            leaveout = 5, 
                            shrinklevels = np.linspace(0,1,51), 
                            wantfull = 0):
+    """
+    mn, c, shrinklevel, nll = calcshrunkencovariance(data,leaveout,shrinklevels,wantfull)
+
+    <data> is a matrix with dimensions observations x variables.
+    There can be more variables than observations. In addition, the 
+    dimensions of <data> can be observations x variables x cases (where
+    the number of cases at least 2); in this special scenario,  
+    we perform handling of "mean-subtraction" for each case
+    (see details below).
+    <leaveout> (optional) is N >= 2 which means leave out 1/N of the data for
+    cross-validation purposes. The selection of data points is random.
+    Default: 5.
+    <shrinklevels> (optional) is a non-empty vector (1 x F) of shrinkage fractions
+    (between 0 and 1 inclusive) to evaluate. For example, 0.8 means to
+    shrink values to 80  of their original size. Default: np.linspace(0,1,51).
+    <wantfull> (optional) is whether to use the identified optimal shrinkage
+    fraction to re-estimate the mean and covariance using the full dataset
+    (i.e. including the initially left-out data). Default: 0.
+
+    Using (N-1)/N of the data (randomly selected), calculate a covariance 
+    matrix and shrink the off-diagonal elements to 0 according to
+    <shrinklevels>. (The diagonal elements are left untouched.) The shrinkage
+    level that maximizes the likelihood (i.e., minimizes the negative log 
+    likelihood) of the left-out 1/N of the data is chosen. If <wantfull>,
+    we re-estimate the mean and covariance using all of the data and the
+    identified shrinkage level. If not <wantfull>, we just return the 
+    shrunken estimate from (N-1)/N of the data.
+
+    Note that we try to detect pathological cases and if detected, we will
+    issue warning messages.
+
+    The case where <data> has multiple cases along the third dimension
+    is useful for when you have multiple sets of measurements, each of
+    which has an unknown mean. In this scenario, we calculate the covariance
+    of each case separately (thereby ignoring the mean of each sample)
+    and then average (pool) covariance estimates across cases.
+    Note that in this special scenario, we perform cross-validation on 
+    cases (not observations), the returned <mn> is necessarily all zero,
+    and the left-out data are also mean-subtracted before evaluating the
+    cross-validated likelihood of covariance estimates.
+
+    Return:
+    <mn> as 1 x variables with the estimated mean
+    <c> as variables x variables with the estimated covariance matrix
+    <shrinklevel> as the shrinkage fraction that was chosen
+    <nll> as 1 x F with the mean negative log likelihood on the left-out data.
+     one or more values can be NaN (e.g. singular covariance matrices).
+
+    Example:
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from gsn.calcshrunkencovariance import calcshrunkencovariance
     
-    # function [mn,c,shrinklevel,nll] = calcshrunkencovariance(data,leaveout,shrinklevels,wantfull)
+    numvar = 100      # number of variables
+    for n in [90, 1000]: #  number of observations
+        sigma = 0.5*np.ones((numvar,numvar));
+        np.fill_diagonal(sigma, 1)
+        x = np.random.multivariate_normal(np.ones((numvar,)),sigma,numvar)
+        xcov = np.cov(x);
+        mn,c,shrinklevel,nll = calcshrunkencovariance(x)
 
-    # <data> is a matrix with dimensions observations x variables.
-    # There can be more variables than observations. In addition, the 
-    # dimensions of <data> can be observations x variables x cases (where
-    # the number of cases at least 2); in this special scenario,  
-    # we perform handling of "mean-subtraction" for each case
-    # (see details below).
-    # <leaveout> (optional) is N >= 2 which means leave out 1/N of the data for
-    # cross-validation purposes. The selection of data points is random.
-    # Default: 5.
-    # <shrinklevels> (optional) is a non-empty vector (1 x F) of shrinkage fractions
-    # (between 0 and 1 inclusive) to evaluate. For example, 0.8 means to
-    # shrink values to 80  of their original size. Default: 0:.02:1.
-    # <wantfull> (optional) is whether to use the identified optimal shrinkage
-    # fraction to re-estimate the mean and covariance using the full dataset
-    # (i.e. including the initially left-out data). Default: 0.
-
-    # Using (N-1)/N of the data (randomly selected), calculate a covariance 
-    # matrix and shrink the off-diagonal elements to 0 according to
-    # <shrinklevels>. (The diagonal elements are left untouched.) The shrinkage
-    # level that maximizes the likelihood (i.e., minimizes the negative log 
-    # likelihood) of the left-out 1/N of the data is chosen. If <wantfull>,
-    # we re-estimate the mean and covariance using all of the data and the
-    # identified shrinkage level. If not <wantfull>, we just return the 
-    # shrunken estimate from (N-1)/N of the data.
-
-    # Note that we try to detect pathological cases and if detected, we will
-    # issue warning messages.
-
-    # The case where <data> has multiple cases along the third dimension
-    # is useful for when you have multiple sets of measurements, each of
-    # which has an unknown mean. In this scenario, we calculate the covariance
-    # of each case separately (thereby ignoring the mean of each sample)
-    # and then average (pool) covariance estimates across cases.
-    # Note that in this special scenario, we perform cross-validation on 
-    # cases (not observations), the returned <mn> is necessarily all zero,
-    # and the left-out data are also mean-subtracted before evaluating the
-    # cross-validated likelihood of covariance estimates.
-
-    # Return:
-    # <mn> as 1 x variables with the estimated mean
-    # <c> as variables x variables with the estimated covariance matrix
-    # <shrinklevel> as the shrinkage fraction that was chosen
-    # <nll> as 1 x F with the mean negative log likelihood on the left-out data.
-    #  one or more values can be NaN (e.g. singular covariance matrices).
-
-    # Example:
-    # numvar = 100;       number of variables
-    # for n=[90 1000]     number of observations
-    # sigma = 0.5*ones(numvar);
-    # sigma(logical(eye(numvar))) = 1;
-    # x = randnmulti(n,[],sigma,[]);
-    # xcov = cov(x);
-    # [mn,c,shrinklevel,nll] = calcshrunkencovariance(x);
-    # figureprep([100 100 800 300],1);
-    # subplot(1,3,1);
-    # imagesc(xcov); colormap(jet); colorbar; axis image tight;
-    # title(sprintf('original'));
-    # subplot(1,3,2);
-    # imagesc(c);    colormap(jet); colorbar; axis image tight;
-    # title(sprintf('shrinkage =  .2f',shrinklevel));
-    # subplot(1,3,3);
-    # plot(0:.02:1,nll,'ro-');
-    # title('mean negative log likelihood');
-    # end
+        plt.figure(figsize=(12,4))
+        plt.subplot(131)
+        plt.imshow(xcov)
+        plt.colorbar() 
+        plt.title('original')
+        plt.subplot(1,3,2)
+        plt.imshow(c)
+        plt.colorbar() 
+        plt.title(f'shrinkage = {round(shrinklevel,2)}')
+        plt.subplot(1,3,3)
+        plt.plot(np.arange(0,1.02,0.02),nll,'ro-')
+        plt.title('mean negative log likelihood')
+        plt.show()
+    """
 
     # handle special scenario
     if np.ndim(data) == 3:

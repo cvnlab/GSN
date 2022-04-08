@@ -1,6 +1,3 @@
-import sys
-sys.path.append('../')
-
 import numpy as np
 from gsn.utilities import squish, posrect
 from gsn.calcshrunkencovariance import calcshrunkencovariance
@@ -15,68 +12,73 @@ def rsanoiseceiling(data,
                     nctrials = None,
                     shrinklevels = np.linspace(0,1,51),
                     mode = 0):
+    """
+    nc, ncdist, results = rsanoiseceiling(data,rdmfun,comparefun,numsim,nctrials)
 
-    # function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nctrials)
-    #
-    # <data> is voxels x conditions x trials
-    # <rdmfun> (optional) is a function that constructs an RDM. Specifically,
-    #   the function should accept as input a data matrix (e.g. voxels x conditions)
-    #   and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
-    #   Default: @(data) pdist(data','correlation')'. This default simply 
-    #   calculates dissimilarity as 1-r, and then extracts the lower triangle
-    #   (excluding the diagonal) as a column vector.
-    # <comparefun> (optional) is a function that quantifies the similarity of two RDMs.
-    #   Specifically, the function should accept as input two RDMs (in the format
-    #   that is returned by <rdmfun>) and output a scalar. Default: @corr.
-    # <numsim> (optional) is the number of Monte Carlo simulations to run.
-    #   The final answer is computed as the median across simulations. Default: 20.
-    # <nctrials> (optional) is the number of trials over which to average for
-    #   the purposes of the noise ceiling estimate. For example, setting
-    #   <nctrials> to 10 will result in the calculation of a noise ceiling 
-    #   estimate for the case in which responses are averaged across 10 trials
-    #   measured for each condition. Default: size(data,3).
-    #
-    # Use the GSN (generative modeling of signal and noise) method to estimate
-    # an RSA noise ceiling.
-    #
-    # Note: if <comparefun> ever returns NaN, we automatically replace these
-    # cases with 0. This is a convenient workaround for degenerate cases, 
-    # e.g., cases where the signal is generated as all zero.
-    #
-    # Return:
-    #   <nc> as a scalar with the noise ceiling estimate.
-    #   <ncdist> as 1 x <numsim> with the result of each simulation.
-    #     Note that <nc> is simply the median of <ncdist>.
-    #   <results> as a struct with additional details:
-    #     mnN - the estimated mean of the noise (1 x voxels)
-    #     cN  - the estimated covariance of the noise (voxels x voxels)
-    #     mnS - the estimated mean of the signal (1 x voxels)
-    #     cS  - the estimated covariance of the signal (voxels x voxels)
-    #     cSb - the regularized estimated covariance of the signal (voxels x voxels).
-    #           this estimate reflects both a nearest-approximation and 
-    #           a post-hoc scaling, and is used in the Monte Carlo simulations.
-    #     rapprox - the correlation between the nearest-approximation of the 
-    #               signal covariance and the original signal covariance
-    #
-    # Example:
-    # data = repmat(randn(100,40),[1 1 4]) + 2*randn(100,40,4);
-    # [nc,ncdist,results] = rsanoiseceiling(data);
+    <data> is voxels x conditions x trials
+    <rdmfun> (optional) is a function that constructs an RDM. Specifically,
+      the function should accept as input a data matrix (e.g. voxels x conditions)
+      and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
+      Default: lambda x: pdist(x.T,'correlation'). This default simply 
+      calculates dissimilarity as 1-r, and then extracts the lower triangle
+      (excluding the diagonal) as a column vector.
+    <comparefun> (optional) is a function that quantifies the similarity of two RDMs.
+      Specifically, the function should accept as input two RDMs (in the format
+      that is returned by <rdmfun>) and output a scalar. 
+      Default: lambda x,y: stats.pearsonr(x,y)[0], returning the Pearson
+      correlation between the two RDMs.
+    <numsim> (optional) is the number of Monte Carlo simulations to run.
+      The final answer is computed as the median across simulations. Default: 20.
+    <nctrials> (optional) is the number of trials over which to average for
+      the purposes of the noise ceiling estimate. For example, setting
+      <nctrials> to 10 will result in the calculation of a noise ceiling 
+      estimate for the case in which responses are averaged across 10 trials
+      measured for each condition. Default: data.shape[2].
 
-    # internal inputs:
-    #
-    # <shrinklevels> (optional) is like the input to calcshrunkencovariance.m.
-    #   Default: [].
-    # <mode> (optional) is
-    #   0 means do the normal thing
-    #   1 means to omit the gain adjustment
+    Use the GSN (generative modeling of signal and noise) method to estimate
+    an RSA noise ceiling.
 
+    Note: if <comparefun> ever returns NaN, we automatically replace these
+    cases with 0. This is a convenient workaround for degenerate cases, 
+    e.g., cases where the signal is generated as all zero.
+
+    Return:
+      <nc> as a scalar with the noise ceiling estimate.
+      <ncdist> as 1 x <numsim> with the result of each simulation.
+        Note that <nc> is simply the median of <ncdist>.
+      <results> as a struct with additional details:
+        mnN - the estimated mean of the noise (1 x voxels)
+        cN  - the estimated covariance of the noise (voxels x voxels)
+        mnS - the estimated mean of the signal (1 x voxels)
+        cS  - the estimated covariance of the signal (voxels x voxels)
+        cSb - the regularized estimated covariance of the signal (voxels x voxels).
+              this estimate reflects both a nearest-approximation and 
+              a post-hoc scaling, and is used in the Monte Carlo simulations.
+        rapprox - the correlation between the nearest-approximation of the 
+                  signal covariance and the original signal covariance
+
+    Example:
+    data = np.random.randn(100,40,4) + 2*np.random.randn(100,40,4);
+    [nc,ncdist,results] = rsanoiseceiling(data)
+
+    internal inputs:
+
+    <shrinklevels> (optional) is like the input to calcshrunkencovariance.m.
+      Default: np.linspace(0,1,51).
+    <mode> (optional) is
+      0 means do the normal thing
+      1 means to omit the gain adjustment
+    """
+    
     # calc
     nvox   = data.shape[0]
     ncond  = data.shape[1]
     ntrial = data.shape[2]
     
     # how many simulated trial averages to perform
-    nctrials = data.shape[2]
+    # by default use number contained in the data
+    if nctrials is None:
+        nctrials = data.shape[2]
 
     # estimate noise covariance
     mnN, cN, shrinklevelN, nllN = calcshrunkencovariance(data=np.transpose(data,(2,0,1)),
@@ -116,8 +118,8 @@ def rsanoiseceiling(data,
     ncdist = np.zeros((numsim,))
     for rr in range(numsim):
         
-        signal = np.random.multivariate_normal(np.squeeze(mnS),cSb,ncond) # cond x voxels
-        noise = np.random.multivariate_normal(np.squeeze(mnN),cN,ncond*nctrials) # ncond*nctrials x voxels
+        signal = np.random.multivariate_normal(np.squeeze(mnS),cSb,size=ncond) # cond x voxels
+        noise = np.random.multivariate_normal(np.squeeze(mnN),cN,size=ncond*nctrials) # ncond*nctrials x voxels
         measurement = signal + np.mean(np.reshape(noise,(ncond,nctrials,nvox)),1)  # cond x voxels
         
         ncdist[rr] = comparefun(rdmfun(signal.T),rdmfun(measurement.T))

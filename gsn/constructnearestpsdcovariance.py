@@ -2,6 +2,32 @@ import numpy as np
 import scipy.stats as stats
 
 def constructnearestpsdcovariance(c1):
+    """
+    c1,rapprox = constructnearestpsdcovariance(c1)
+
+    <c> is a square matrix (N x N)
+
+    Use the method of Higham 1988 to obtain the nearest symmetric
+    positive semidefinite matrix to <c> (in the Frobenius norm).
+
+    Return:
+    <c> as the approximating matrix
+    <rapprox> as the correlation between the original matrix
+    and the approximating matrix.
+
+    example:
+    c1 = np.cov(np.random.randn(100,10))
+    c1[1,1] = -1
+    c2, rapprox = constructnearestpsdcovariance(c1)
+    plt.figure()
+    plt.subplot(121)
+    plt.imshow(c1,clim=(-2,2))
+    plt.subplot(122)
+    plt.imshow(c2,clim=(-2,2))
+    T = np.linalg.cholesky(c1) # should error
+    T = np.linalg.cholesky(c2) # should succeed
+    print(rapprox)
+    """
     
     # ensure symmetric
     c1 = (c1 + c1.T)/2
