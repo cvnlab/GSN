@@ -4,11 +4,11 @@ function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nct
 %
 % <data> is voxels x conditions x trials
 % <rdmfun> (optional) is a function that constructs an RDM. Specifically,
-%   the function should accept as input a data matrix (e.g. voxels x conditions x trials)
+%   the function should accept as input a data matrix (e.g. voxels x conditions)
 %   and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
-%   Default: @(data) pdist(mean(data,3)','correlation')'. This default simply 
-%   computes the mean across trials, calculates dissimilarity as 1-r, and then
-%   extracts the lower triangle (excluding the diagonal) as a column vector.
+%   Default: @(data) pdist(data','correlation')'. This default simply 
+%   calculates dissimilarity as 1-r, and then extracts the lower triangle
+%   (excluding the diagonal) as a column vector.
 % <comparefun> (optional) is a function that quantifies the similarity of two RDMs.
 %   Specifically, the function should accept as input two RDMs (in the format
 %   that is returned by <rdmfun>) and output a scalar. Default: @corr.
@@ -56,7 +56,7 @@ function [nc,ncdist,results] = rsanoiseceiling(data,rdmfun,comparefun,numsim,nct
 
 % inputs
 if ~exist('rdmfun','var') || isempty(rdmfun)
-  rdmfun = @(data) pdist(mean(data,3)','correlation')';
+  rdmfun = @(data) pdist(data','correlation')';
 end
 if ~exist('comparefun','var') || isempty(comparefun)
   comparefun = @corr;
