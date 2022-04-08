@@ -6,16 +6,18 @@ import scipy.stats as stats
 from scipy.spatial.distance import pdist
 
 def rsa_noise_ceiling(data,
-                     rdmfun = lambda x: pdist(x.T,'correlation'),
-                     comparefun = lambda x,y: stats.pearsonr(x,y)[0],
-                     numsim = 20,
-                     nctrials = None,
-                     shrinklevels = np.linspace(0,1,51),
-                     mode = 0):
+                      wantverbose = True,
+                      rdmfun = lambda x: pdist(x.T,'correlation'),
+                      comparefun = lambda x,y: stats.pearsonr(x,y)[0],
+                      numsim = 20,
+                      nctrials = None,
+                      shrinklevels = np.linspace(0,1,51),
+                      mode = 0):
     """
     nc, ncdist, results = rsa_noise_ceiling(data,rdmfun,comparefun,numsim,nctrials)
 
     <data> is voxels x conditions x trials
+    <wantverbose> (optional) is whether to print status statements. Default: 1.
     <rdmfun> (optional) is a function that constructs an RDM. Specifically,
       the function should accept as input a data matrix (e.g. voxels x conditions)
       and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
@@ -70,29 +72,50 @@ def rsa_noise_ceiling(data,
       1 means to omit the gain adjustment
     """
     
-    # calc
+    # get input dimensions
     nvox   = data.shape[0]
     ncond  = data.shape[1]
     ntrial = data.shape[2]
+    
+    ###### ESTIMATION #####
     
     # how many simulated trial averages to perform
     # by default use number contained in the data
     if nctrials is None:
         nctrials = data.shape[2]
 
+    if wantverbose is True:
+        print('Estimating noise covariance...')
+        
     # estimate noise covariance
-    mnN, cN, shrinklevelN, nllN = calc_shrunken_covariance(data=np.transpose(data,(2,0,1)),
-                                                         shrinklevels=shrinklevels,
-                                                         wantfull=1)
+    mnN, cN, shrinklevelN, nllN = calc_shrunken_covariance(data = np.transpose(data,(2,0,1)),
+                                                           shrinklevels = shrinklevels,
+                                                           wantfull = 1)
+    
+    if wantverbose is True:
+        print('done.\n')
+        print('Estimating data covariance...')        
 
     # estimate data covariance
-    mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(data=np.mean(data,2).T,
-                                                         shrinklevels=shrinklevels,
-                                                         wantfull=1)
+    mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(data = np.mean(data,2).T,
+                                                           shrinklevels = shrinklevels,
+                                                           wantfull = 1)
+    
+    if wantverbose is True:
+        print('done.\n')
+        print('Estimating signal covariance...')
 
     # estimate signal covariance
     mnS = mnD - mnN
     cS  =  cD - cN/ntrial
+    
+    if wantverbose is True:
+        print('done.\n')
+        
+    ##### REGULARIZATION #####
+    
+    if wantverbose is True:
+        print('Regularizing...')
 
     # calculate nearest approximation for the noise.
     # this is expected to be PSD already. however, small numerical issues
@@ -114,16 +137,28 @@ def rsa_noise_ceiling(data,
     elif mode == 1:
         pass
 
+    if wantverbose is True:
+        print('done.\n')
+        
+    ##### SIMULATIONS #####
+    if wantverbose is True:
+        print('Performing Monte Carlo simulations...')
+        
     # perform Monte Carlo simulations
     ncdist = np.zeros((numsim,))
     for rr in range(numsim):
         
-        signal = np.random.multivariate_normal(np.squeeze(mnS),cSb,size=ncond) # cond x voxels
-        noise = np.random.multivariate_normal(np.squeeze(mnN),cN,size=ncond*nctrials) # ncond*nctrials x voxels
-        measurement = signal + np.mean(np.reshape(noise,(ncond,nctrials,nvox)),1)  # cond x voxels
+        signal = np.random.multivariate_normal(np.squeeze(mnS), cSb, size = ncond) # cond x voxels
+        noise = np.random.multivariate_normal(np.squeeze(mnN), cN, size = ncond * nctrials) # ncond*nctrials x voxels
+        measurement = signal + np.mean(np.reshape(noise, (ncond, nctrials, nvox)), 1)  # cond x voxels
         
-        ncdist[rr] = comparefun(rdmfun(signal.T),rdmfun(measurement.T))
+        ncdist[rr] = comparefun(rdmfun(signal.T), rdmfun(measurement.T))
+        
+    if wantverbose is True:
+        print('done.\n')
 
+    ##### FINISH UP #####
+    
     # if comparefun ever outputs NaN, set these cases to 0.
     # for example, you might be correlating an all-zero signal
     # with some data, which may result in NaN.
@@ -133,11 +168,11 @@ def rsa_noise_ceiling(data,
     nc = np.median(ncdist)
 
     # prepare additional outputs
-    results = {'mnN':mnN,
-               'cN':cN,
-               'mnS':mnS,
-               'cS':cS,
-               'cSb':cSb,
-               'rapprox':rapprox}
+    results = {'mnN': mnN,
+               'cN': cN,
+               'mnS': mnS,
+               'cS': cS,
+               'cSb': cSb,
+               'rapprox': rapprox}
                                                         
     return nc,ncdist,results
