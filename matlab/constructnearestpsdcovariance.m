@@ -44,10 +44,9 @@ else
   % check that it is indeed PSD
   [T,err] = cholcov(c2);
   if err ~= 0
-    warning('nearest cov is not PSD! attempting to use recursion to fix this.');
-    c2 = constructnearestpsdcovariance(c2);
+    c2 = c2 + eye(size(c2))*1e-10;           % add a small ridge
+    c2 = constructnearestpsdcovariance(c2);  % recurse
   end
-  %assert(err == 0,'nearest cov is not PSD!');
 
   % calculate how good the approximation is
   rapprox = corr(c(:),c2(:));
