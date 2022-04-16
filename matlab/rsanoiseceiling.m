@@ -311,65 +311,6 @@ case 0
   
   % impose scaling and run it through constructnearestpsdcovariance.m for good measure
   cSb = constructnearestpsdcovariance(cSb * sc);
-
-  % visualize in a figure
-  if opt.wantfig == 0
-    % do nothing
-  else
-
-    if opt.wantverbose, fprintf('Creating figure...');, end
-
-    if isequal(opt.wantfig,1)
-      figure;
-    else
-      figureprep;  % this makes an invisible figure window
-    end
-
-    subplot(1,2,1); hold on;
-    cmap0 = parula(length(opt.scs));  % cmapturbo
-    hs = [];
-    for sci=1:length(opt.scs)
-      md0 = median(modelsplitr(sci,:,:),3);  % 1 x n
-      se0 = (iqr(modelsplitr(sci,:,:),3)/2) ./ sqrt(size(modelsplitr,3));  % 1 x n
-      h0 = errorbar2(splitnums,md0,se0,'v','r-');
-      set(h0,'Color',cmap0(sci,:));
-      hs = [hs h0];
-      if opt.scs(sci)==sc
-        lw0 = 3;
-        mark0 = 'o';
-      else
-        lw0 = 1;
-        mark0 = 'x';
-      end
-      plot(splitnums,md0,['r' mark0 '-'],'Color',cmap0(sci,:),'LineWidth',lw0);
-    end
-    uistack(hs,'bottom');
-    md0 = median(datasplitr,2)';
-    sd0 = (iqr(datasplitr,2)/2)';
-    se0 = sd0 ./ sqrt(size(datasplitr,2));
-    set(errorbar2(splitnums,md0,sd0,'v','k-'),'LineWidth',1);
-    set(errorbar2(splitnums,md0,se0,'v','k-'),'LineWidth',3);
-    plot(splitnums,md0,'kd-','LineWidth',3);
-    xlabel('Number of trials per split');
-    ylabel('Similarity (comparefun output)');
-    title(sprintf('data (%d sims); model (%d sims)',size(datasplitr,2),size(modelsplitr,3)));
-
-    subplot(1,2,2); hold on;
-    plot(opt.scs,R2s,'ro-');
-    straightline(sc,'v','k-');
-    xlabel('Scaling factor');
-    ylabel('R^2 between model and data (%)');
-    title(sprintf('rapprox=%.2f, sc=%.2f',rapprox,sc));
-    
-    if isequal(opt.wantfig,1)
-    else
-      [dir0,file0] = stripfile(opt.wantfig);
-      figurewrite(file0,[],[],dir0);
-    end
-
-    if opt.wantverbose, fprintf('done.\n');, end
-
-  end
   
 end
 
@@ -400,4 +341,94 @@ clear results;
 varstosave = {'mnN' 'cN' 'mnS' 'cS' 'cSb' 'rapprox' 'sc' 'splitr' 'ncsnr'};
 for p=1:length(varstosave)
   results.(varstosave{p}) = eval(varstosave{p});
+end
+
+%% %%%%% MAKE A FIGURE
+
+if opt.mode == 0 && ~isequal(opt.wantfig,0)
+
+  if opt.wantverbose, fprintf('Creating figure...');, end
+
+  if isequal(opt.wantfig,1)
+    figure; setfigurepos([100 100 750 750]);
+  else
+    figureprep([100 100 750 750]);  % this makes an invisible figure window
+  end
+
+  subplot(4,6,[1 2]); hold on;
+  hist(mnS);
+  ylabel('Frequency');
+  title('Mean of Signal');
+  
+  subplot(4,6,[3 4]); hold on;
+  mx = max(abs(cS(:)));
+  imagesc(cS,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
+  title('Covariance of Signal');
+
+  subplot(4,6,[5 6]); hold on;
+  mx = max(abs(cSb(:)));
+  imagesc(cSb,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
+  title('Regularized and scaled');
+  
+  subplot(4,6,[7 8]); hold on;
+  hist(mnN);
+  ylabel('Frequency');
+  title('Mean of Noise');
+
+  subplot(4,6,[9 10]); hold on;
+  mx = max(abs(cN(:)));
+  imagesc(cN,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
+  title('Covariance of Noise');
+
+  subplot(4,6,[11 12]); hold on;
+  hist(ncsnr);
+  ylabel('Frequency');
+  title('Noise ceiling SNR');
+
+  subplot(4,6,[13 14 15 19 20 21]); hold on;
+  cmap0 = parula(length(opt.scs));  % cmapturbo
+  hs = [];
+  for sci=1:length(opt.scs)
+    md0 = median(modelsplitr(sci,:,:),3);  % 1 x n
+    se0 = (iqr(modelsplitr(sci,:,:),3)/2) ./ sqrt(size(modelsplitr,3));  % 1 x n
+    h0 = errorbar2(splitnums,md0,se0,'v','r-');
+    set(h0,'Color',cmap0(sci,:));
+    hs = [hs h0];
+    if opt.scs(sci)==sc
+      lw0 = 3;
+      mark0 = 'o';
+    else
+      lw0 = 1;
+      mark0 = 'x';
+    end
+    plot(splitnums,md0,['r' mark0 '-'],'Color',cmap0(sci,:),'LineWidth',lw0);
+  end
+  uistack(hs,'bottom');
+  md0 = median(datasplitr,2)';
+  sd0 = (iqr(datasplitr,2)/2)';
+  se0 = sd0 ./ sqrt(size(datasplitr,2));
+  set(errorbar2(splitnums,md0,sd0,'v','k-'),'LineWidth',1);
+  set(errorbar2(splitnums,md0,se0,'v','k-'),'LineWidth',3);
+  plot(splitnums,md0,'kd-','LineWidth',3);
+  xlim([min(splitnums)-1 max(splitnums)+1]);
+  set(gca,'XTick',unique(round(get(gca,'XTick'))));
+  xlabel('Number of trials in each split');
+  ylabel('Similarity (comparefun output)');
+  title(sprintf('Data (%d sims); Model (%d sims); splitr=%.3f',size(datasplitr,2),size(modelsplitr,3),splitr));
+
+  subplot(4,6,[16 17 18 22 23 24]); hold on;
+  plot(opt.scs,R2s,'ro-');
+  straightline(sc,'v','k-');
+  xlabel('Scaling factor');
+  ylabel('R^2 between model and data (%)');
+  title(sprintf('rapprox=%.2f, sc=%.2f, nc=%.3f +/- %.3f',rapprox,sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
+  
+  if isequal(opt.wantfig,1)
+  else
+    [dir0,file0] = stripfile(opt.wantfig);
+    figurewrite(file0,[],[],dir0);
+  end
+
+  if opt.wantverbose, fprintf('done.\n');, end
+
 end
