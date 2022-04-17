@@ -312,6 +312,12 @@ case 0
   % impose scaling and run it through constructnearestpsdcovariance.m for good measure
   cSb = constructnearestpsdcovariance(cSb * sc);
   
+  % if the data split r is higher than all of the model split r, we should warn the user.
+  temp = median(modelsplitr(:,end,:),3);  % length(scs) x 1
+  if splitr > max(temp)
+    warning('the empirical data split r seems to be out of the range of the model. results may be inaccurate. consider increasing the <scs> input.');
+  end
+  
 end
 
 if opt.wantverbose, fprintf('done.\n');, end
