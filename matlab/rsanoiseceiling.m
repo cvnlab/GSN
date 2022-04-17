@@ -315,7 +315,16 @@ case 0
   % if the data split r is higher than all of the model split r, we should warn the user.
   temp = median(modelsplitr(:,end,:),3);  % length(scs) x 1
   if splitr > max(temp)
-    warning('the empirical data split r seems to be out of the range of the model. results may be inaccurate. consider increasing the <scs> input.');
+    warning('the empirical data split r seems to be out of the range of the model. something may be wrong; results may be inaccurate. consider increasing the <scs> input.');
+  end
+  
+  % do a sanity check on the smoothness of the R2 results. if they appear
+  % to be non-smooth, we should warn the user.
+  if length(R2s) >= 4
+    temp = calccod(conv(R2s',[1 1 1]/3,'valid'),R2s(2:end-1)');
+    if temp < 90
+      warning(sprintf('the R2 values appear to be non-smooth (smooth function explains only %.1f%% variance). something may be wrong; results may be inaccurate. consider increasing simchunk, simthresh, and/or maxsimnum',temp));
+    end
   end
   
 end
@@ -367,12 +376,12 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   title('Mean of Signal');
   
   subplot(4,6,[3 4]); hold on;
-  mx = max(abs(cS(:)));
+  mx = max(abs(cS(:))); if mx==0, mx = 1;, end
   imagesc(cS,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
   title('Covariance of Signal');
 
   subplot(4,6,[5 6]); hold on;
-  mx = max(abs(cSb(:)));
+  mx = max(abs(cSb(:))); if mx==0, mx = 1;, end
   imagesc(cSb,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
   title('Regularized and scaled');
   
@@ -382,7 +391,7 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   title('Mean of Noise');
 
   subplot(4,6,[9 10]); hold on;
-  mx = max(abs(cN(:)));
+  mx = max(abs(cN(:))); if mx==0, mx = 1;, end
   imagesc(cN,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
   title('Covariance of Noise');
 
@@ -424,7 +433,7 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
 
   subplot(4,6,[16 17 18 22 23 24]); hold on;
   plot(opt.scs,R2s,'ro-');
-  straightline(sc,'v','k-');
+  set(straightline(sc,'v','k-'),'LineWidth',3);
   xlabel('Scaling factor');
   ylabel('R^2 between model and data (%)');
   title(sprintf('rapprox=%.2f, sc=%.2f, nc=%.3f +/- %.3f',rapprox,sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
