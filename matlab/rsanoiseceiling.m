@@ -55,10 +55,10 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %       specific scale factors to evaluate. There is a trade-off between
 %       speed of execution and the discretization/precision of the results.
 %     Default: 0:.1:2.
-%   <simchunk> (optional) is the chunk size for the data-splitting
-%     simulations. Default: 50, which indicates to perform 50 simulations 
-%     for each case, and then increment in steps of 50 if necessary to
-%     achieve <simthresh>. Must be 2 or greater.
+%   <simchunk> (optional) is the chunk size for the data-splitting and
+%     model-based simulations. Default: 50, which indicates to perform 50 
+%     simulations for each case, and then increment in steps of 50 if 
+%     necessary to achieve <simthresh>. Must be 2 or greater.
 %   <simthresh> (optional) is the value for the robustness metric that must
 %     be exceeded in order to halt the data-splitting simulations. 
 %     The lower this number, the faster the execution time, but the less 
@@ -72,6 +72,13 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 % Note: if <comparefun> ever returns NaN, we automatically replace these
 % cases with 0. This is a convenient workaround for degenerate cases that
 % might arise, e.g., cases where the signal is generated as all zero.
+%
+% Note: for splits of the empirical data, it might be the case that
+% exhaustive combinations might be faster than the random-sampling
+% approach. Thus, if all splits (as controlled by <splitmode>) can
+% be exhaustively done in less than or equal to opt.simchunk iterations,
+% then we will go ahead and compute the exhaustive (and therefore exact)
+% solution, instead of the random-sampling approach.
 %
 % Return:
 %   <nc> as a scalar with the noise ceiling estimate.
@@ -238,30 +245,91 @@ case 0
 
   % calculate data split reliability
   if opt.wantverbose, fprintf('Calculating data split reliability...');, end
-  iicur = 1;               % current sim number
-  iimax = opt.simchunk;    % current targeted max
-  datasplitr = zeros(length(splitnums),iimax);
-  while 1
-    for nn=1:length(splitnums)
-      for si=iicur:iimax
-        temp = randperm(ntrial);
-        datasplitr(nn,si) = nanreplace(opt.comparefun(opt.rdmfun(mean(data(:,:,temp(1:splitnums(nn))),3)), ...
-                                                  opt.rdmfun(mean(data(:,:,temp(splitnums(nn)+(1:splitnums(nn)))),3))));
+  
+  % first, we need to figure out if we can do exhaustive combinations
+  doexhaustive = 1;
+  combolist = {}; validmatrix = {};
+  for nn=length(splitnums):-1:1
+
+    % if the dimensionality seems too large, just get out
+    if nchoosek(ntrial,splitnums(nn)) > 2*opt.simchunk
+      doexhaustive = 0;
+      break;
+    end
+    
+    % calculate the full set of possibilities
+    combolist{nn} = nchoosek(1:ntrial,splitnums(nn));  % combinations x splitnums(nn)
+    ncomb = size(combolist{nn},1);
+
+    % figure out pairs of splits that are mutually exclusive
+    validmatrix{nn} = zeros(ncomb,ncomb);
+    for r=1:ncomb
+      for c=1:ncomb
+        if c <= r      % this admits only the upper triangle as potentially valid
+          continue;
+        end
+        if isempty(intersect(combolist{nn}(r,:),combolist{nn}(c,:)))
+          validmatrix{nn}(r,c) = 1;
+        end
       end
     end
-    temp = datasplitr;
-    robustness = mean(abs(median(temp,2)) ./ ((iqr(temp,2)/2)/sqrt(size(temp,2))));
-    if robustness > opt.simthresh
+    
+    % if the number of combinations to process is more than opt.simchunk, just give up
+    if sum(validmatrix{nn}(:)) > opt.simchunk
+      doexhaustive = 0;
       break;
     end
-    iicur = iimax + 1;
-    iimax = iimax + opt.simchunk;
-    if iimax > opt.maxsimnum
-      break;
-    end
-    datasplitr(1,iimax) = 0;  % pre-allocate
+    
   end
-  splitr = median(datasplitr(end,:),2);  % 1 x 1 with the median result for the "most trials" data split case
+  
+  % if it looks like we can do it exhaustively, do it!
+  if doexhaustive
+    if opt.wantverbose, fprintf('doing exhaustive set of combinations...');, end
+    datasplitr = zeros(length(splitnums),1);  % we will save only one single value with the ultimate result
+    for nn=1:length(splitnums)
+      ncomb = size(combolist{nn},1);
+      temp = [];
+      for r=1:ncomb
+        for c=1:ncomb
+          if validmatrix{nn}(r,c)
+            temp = [temp nanreplace(opt.comparefun(opt.rdmfun(mean(data(:,:,combolist{nn}(r,:)),3)), ...
+                                                   opt.rdmfun(mean(data(:,:,combolist{nn}(c,:)),3))))];
+          end
+        end
+      end
+      datasplitr(nn) = median(temp);
+    end
+    splitr = datasplitr(end);  % 1 x 1 with the result for the "most trials" data split case
+    
+  % otherwise, do the random-sampling approach
+  else
+    iicur = 1;               % current sim number
+    iimax = opt.simchunk;    % current targeted max
+    datasplitr = zeros(length(splitnums),iimax);
+    while 1
+      for nn=1:length(splitnums)
+        for si=iicur:iimax
+          temp = randperm(ntrial);
+          datasplitr(nn,si) = nanreplace(opt.comparefun(opt.rdmfun(mean(data(:,:,temp(1:splitnums(nn))),3)), ...
+                                                    opt.rdmfun(mean(data(:,:,temp(splitnums(nn)+(1:splitnums(nn)))),3))));
+        end
+      end
+      temp = datasplitr;
+      robustness = mean(abs(median(temp,2)) ./ ((iqr(temp,2)/2)/sqrt(size(temp,2))));
+      if robustness > opt.simthresh
+        break;
+      end
+      iicur = iimax + 1;
+      iimax = iimax + opt.simchunk;
+      if iimax > opt.maxsimnum
+        break;
+      end
+      datasplitr(1,iimax) = 0;  % pre-allocate
+    end
+    splitr = median(datasplitr(end,:),2);  % 1 x 1 with the median result for the "most trials" data split case
+  end
+  
+  % done with data split reliability
   if opt.wantverbose, fprintf('done.\n');, end
 
   % calculate model-based split reliability
@@ -429,7 +497,11 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   set(gca,'XTick',unique(round(get(gca,'XTick'))));
   xlabel('Number of trials in each split');
   ylabel('Similarity (comparefun output)');
-  title(sprintf('Data (%d sims); Model (%d sims); splitr=%.3f',size(datasplitr,2),size(modelsplitr,3),splitr));
+  if doexhaustive
+    title(sprintf('Data (ALL sims); Model (%d sims); splitr=%.3f',size(modelsplitr,3),splitr));
+  else
+    title(sprintf('Data (%d sims); Model (%d sims); splitr=%.3f',size(datasplitr,2),size(modelsplitr,3),splitr));
+  end
 
   subplot(4,6,[16 17 18 22 23 24]); hold on;
   plot(opt.scs,R2s,'ro-');
