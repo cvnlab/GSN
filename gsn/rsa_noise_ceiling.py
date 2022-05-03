@@ -339,7 +339,7 @@ def rsa_noise_ceiling(data,
                                                                   rdmfun(np.mean(dataB, axis = 2))))
 
                 temp = datasplitr
-                robustness = np.mean(np.abs(np.median(temp, axis=1)) / ((stats.iqr(temp, axis=1) / 2) / np.sqrt(temp.shape[1])))
+                robustness = np.mean(np.abs(np.median(temp, axis = 1)) / ((stats.iqr(temp, axis = 1) / 2) / np.sqrt(temp.shape[1])))
                 
                 if robustness > simthresh:
                     if wantverbose is True:
@@ -394,7 +394,7 @@ def rsa_noise_ceiling(data,
                                                                          rdmfun(measurementB.T)))
                                                 
                 temp = modelsplitr[sci]
-                robustness[sci] = np.mean(np.abs(np.median(temp, axis=1)) / ((stats.iqr(temp, axis=1) / 2) / np.sqrt(temp.shape[1])))
+                robustness[sci] = np.mean(np.abs(np.median(temp, axis = 1)) / ((stats.iqr(temp, axis = 1) / 2) / np.sqrt(temp.shape[1])))
             
             robustness = np.mean(robustness)
             
@@ -436,7 +436,7 @@ def rsa_noise_ceiling(data,
             
         # if the data split r is higher than all of the model split r, 
         # we should warn the user.
-        temp = np.median(modelsplitr[:,-1],axis = 1)
+        temp = np.median(modelsplitr[:, -1], axis = 1)
         
         if splitr > np.max(temp):
             print(f'\twarning: the empirical data split r seems to be out of range of the model. something may be wrong; results may be inaccurate. consider increasing the <scs> input.')
@@ -444,7 +444,7 @@ def rsa_noise_ceiling(data,
         # do a sanity check on the smoothness of the R2 results.
         # if they appear to be non-smooth, we should warn the user
         if len(R2s) >= 4:
-            temp = calc_cod(np.convolve(R2s, np.array([1,1,1])/3, 'valid'),
+            temp = calc_cod(np.convolve(R2s, np.array([1, 1, 1]) / 3, 'valid'),
                             R2s[1:-1])
             
         if temp < 90:
@@ -525,50 +525,50 @@ def rsa_noise_ceiling(data,
         titleft = 36
         labelft = 24
 
-        ax['A'].hist(np.squeeze(mnS), facecolor='#442cb4', align = 'left')
-        ax['A'].set_ylabel('Frequency',fontsize=labelft)
-        ax['A'].set_title('Mean of Signal',fontsize=titleft)
-        ax['A'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        ax['A'].hist(np.squeeze(mnS), facecolor = '#442cb4', align = 'left')
+        ax['A'].set_ylabel('Frequency', fontsize = labelft)
+        ax['A'].set_title('Mean of Signal', fontsize = titleft)
+        ax['A'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
         mx = np.max(np.abs(cS.reshape(-1)))
         if mx == 0:
             mx = 1
 
-        im = ax['B'].imshow(cS, clim=(-mx, mx), cmap = 'viridis')
+        im = ax['B'].imshow(cS, clim = (-mx, mx), cmap = 'viridis')
         cb = plt.colorbar(im, ax = ax['B'])
-        cb.ax.tick_params(labelsize=labelft-2)
-        ax['B'].set_title('Covariance of Signal',fontsize=titleft)
-        ax['B'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        cb.ax.tick_params(labelsize = labelft - 2)
+        ax['B'].set_title('Covariance of Signal', fontsize = titleft)
+        ax['B'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
         mx = np.max(np.abs(cSb.reshape(-1)))
         if mx == 0:
             mx = 1
 
-        im = ax['C'].imshow(cSb, clim=(-mx, mx), cmap = 'viridis')
+        im = ax['C'].imshow(cSb, clim = (-mx, mx), cmap = 'viridis')
         cb = plt.colorbar(im, ax = ax['C'])
-        cb.ax.tick_params(labelsize=labelft-2)
-        ax['C'].set_title('Regularized and scaled',fontsize=titleft)
-        ax['C'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        cb.ax.tick_params(labelsize = labelft - 2)
+        ax['C'].set_title('Regularized and scaled', fontsize = titleft)
+        ax['C'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
-        ax['D'].hist(np.squeeze(mnN), facecolor='#442cb4', align = 'left')
-        ax['D'].set_ylabel('Frequency',fontsize=labelft)
-        ax['D'].set_title('Mean of Noise',fontsize=titleft)
-        ax['D'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        ax['D'].hist(np.squeeze(mnN), facecolor = '#442cb4', align = 'left')
+        ax['D'].set_ylabel('Frequency', fontsize = labelft)
+        ax['D'].set_title('Mean of Noise', fontsize = titleft)
+        ax['D'].tick_params(axis='both', which = 'major', labelsize = labelft - 2)
 
         mx = np.max(np.abs(cN.reshape(-1)))
         if mx == 0:
             mx = 1
 
-        im = ax['E'].imshow(cN, clim=(-mx, mx), cmap = 'viridis')
+        im = ax['E'].imshow(cN, clim = (-mx, mx), cmap = 'viridis')
         cb = plt.colorbar(im, ax = ax['E'])
-        cb.ax.tick_params(labelsize=labelft-2)
-        ax['E'].set_title('Covariance of Noise',fontsize=titleft)
-        ax['E'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        cb.ax.tick_params(labelsize = labelft - 2)
+        ax['E'].set_title('Covariance of Noise', fontsize = titleft)
+        ax['E'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
         ax['F'].hist(np.squeeze(ncsnr), facecolor='#442cb4', align = 'left')
-        ax['F'].set_ylabel('Frequency',fontsize=labelft)
-        ax['F'].set_title('Noise ceiling SNR',fontsize=titleft)
-        ax['F'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        ax['F'].set_ylabel('Frequency', fontsize = labelft)
+        ax['F'].set_title('Noise ceiling SNR', fontsize = titleft)
+        ax['F'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
         hs = []
         for sci in range(len(scs)):
@@ -579,8 +579,8 @@ def rsa_noise_ceiling(data,
         cm = plt.cm.viridis(np.linspace(0, 1, nlines))
 
         for sci in range(len(scs)):
-            md0 = np.median(modelsplitr[sci],axis=1) # 1 x n
-            se0 = (stats.iqr(modelsplitr[sci],axis=1)/2) / np.sqrt(modelsplitr.shape[2]) # 1 x n
+            md0 = np.median(modelsplitr[sci], axis = 1) # 1 x n
+            se0 = (stats.iqr(modelsplitr[sci], axis = 1) / 2) / np.sqrt(modelsplitr.shape[2]) # 1 x n
         
             if scs[sci] == sc:
                 lw0 = 8
@@ -589,28 +589,28 @@ def rsa_noise_ceiling(data,
                 lw0 = 4
                 mark0 = 'x'
 
-            ax['G'].plot(np.squeeze(splitnums), md0, f'{mark0}-',linewidth = lw0, color=cm[sci], markersize=16)
+            ax['G'].plot(np.squeeze(splitnums), md0, f'{mark0}-', linewidth = lw0, color = cm[sci], markersize = 16)
 
         md0 = np.median(datasplitr.reshape(-1, 1), axis = 1)
         sd0 = (stats.iqr(datasplitr.reshape(-1, 1), axis = 1)) / 2
         se0 = sd0 / np.sqrt(datasplitr.reshape(-1, 1).shape[1])
-        ax['G'].plot(np.squeeze(splitnums), md0, 'k-', linewidth = 8, zorder=100, marker = 'o', markersize=20, markeredgecolor = 'k', markerfacecolor = 'none')
-        ax['G'].set_xlim([np.min(splitnums)-1, np.max(splitnums)+1])
-        ax['G'].set_xlabel('Number of trials in each split',fontsize=labelft)
-        ax['G'].set_ylabel('Similarity (comparefun output)',fontsize=labelft)
+        ax['G'].plot(np.squeeze(splitnums), md0, 'k-', linewidth = 8, zorder = 100, marker = 'o', markersize = 20, markeredgecolor = 'k', markerfacecolor = 'none')
+        ax['G'].set_xlim([np.min(splitnums) - 1, np.max(splitnums) + 1])
+        ax['G'].set_xlabel('Number of trials in each split', fontsize = labelft)
+        ax['G'].set_ylabel('Similarity (comparefun output)', fontsize = labelft)
         
         if doexhaustive is 1:
-            ax['G'].set_title(f"Data (ALL sims); Model ({modelsplitr.shape[2]} sims); splitr={round(splitr,3)}",fontsize=titleft)
+            ax['G'].set_title(f"Data (ALL sims); Model ({modelsplitr.shape[2]} sims); splitr={round(splitr, 3)}",fontsize = titleft)
         else:
-            ax['G'].set_title(f"Data ({datasplitr.shape[1]} sims); Model ({modelsplitr.shape[2]} sims); splitr={round(splitr,3)}",fontsize=titleft)
-        ax['G'].tick_params(axis='both', which='major', labelsize=labelft-2)
+            ax['G'].set_title(f"Data ({datasplitr.shape[1]} sims); Model ({modelsplitr.shape[2]} sims); splitr={round(splitr, 3)}",fontsize = titleft)
+        ax['G'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
-        ax['H'].plot(scs, R2s, 'r-', marker = 'o', markeredgecolor='r', markerfacecolor='none', markersize=20)
+        ax['H'].plot(scs, R2s, 'r-', marker = 'o', markeredgecolor = 'r', markerfacecolor = 'none', markersize = 20)
         ax['H'].plot([sc, sc], [np.nanmin(R2s), np.nanmax(R2s)], 'k', linewidth = 8)
-        ax['H'].set_xlabel('Scaling factor',fontsize=labelft)
-        ax['H'].set_ylabel('R^2 between model and data (%)',fontsize=labelft)
-        ax['H'].set_title(f"rapprox={round(rapprox,2)}, sc = {round(sc,2)}, nc = {round(nc,3)}, +/- {round(stats.iqr(ncdist)/2/np.sqrt(len(ncdist)),3)}",fontsize=titleft)
-        ax['H'].tick_params(axis='both', which='major', labelsize=labelft-2)
+        ax['H'].set_xlabel('Scaling factor', fontsize = labelft)
+        ax['H'].set_ylabel('R^2 between model and data (%)', fontsize = labelft)
+        ax['H'].set_title(f"rapprox = {round(rapprox, 2)}, sc = {round(sc, 2)}, nc = {round(nc, 3)}, +/- {round(stats.iqr(ncdist) / 2 / np.sqrt(len(ncdist)), 3)}",fontsize = titleft)
+        ax['H'].tick_params(axis = 'both', which = 'major', labelsize = labelft - 2)
 
         if wantfig is not 1: 
             plt.savefig(wantfig, facecolor = 'white')
