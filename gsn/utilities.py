@@ -188,39 +188,6 @@ def calc_cod(x, y, dim=None, wantgain=0, wantmeansub=1):
         f = np.nan_to_num(1 - (nom / denom))
     return 100*f
 
-def calc_cod_stack(yhat, y):
-    """
-    [summary]
-
-    Args:
-        data ([type]): [description]
-        pred ([type]): [description]
-
-    Returns:
-        r2s: global r2s
-
-    """
-
-    numer = np.asarray(
-        [np.sum((a-b)**2, axis=0) for a, b in zip(yhat, y)]
-        ).sum(axis=0)
-    denom = np.asarray(
-        [np.sum(a**2, axis=0) for a in y]
-        ).sum(axis=0)
-
-    # calculate global R2
-
-    r2s = 100*(1 - zerodiv(
-        numer,
-        denom,
-        val=np.nan,
-        wantcaution=0
-        )
-    )
-
-    return r2s
-
-
 def nanreplace(m, val = 0, mode = 0):
     """
     function m = nanreplace(m,val,mode)
