@@ -6,9 +6,9 @@ from gsn.utilities import squish
 from gsn.calc_mv_gaussian_pdf import calc_mv_gaussian_pdf
 
 def calc_shrunken_covariance(data, 
-                           leaveout = 5, 
-                           shrinklevels = np.linspace(0,1,51), 
-                           wantfull = 0):
+                             leaveout = 5, 
+                             shrinklevels = np.linspace(0,1,51), 
+                             wantfull = 0):
     """
     mn, c, shrinklevel, nll = calc_shrunken_covariance(data,leaveout,shrinklevels,wantfull)
 
@@ -157,7 +157,9 @@ def calc_shrunken_covariance(data,
                                              wantomitexp = 1) 
 
         if err:
-            nll[p] = np.nan
+            # set to infinity instead of nan, since np.argmin doesn't
+            # handle nans well. 
+            nll[p] = np.inf 
             continue
         
         # calculate mean negative log likelihood (lower values mean higher probabilities)
