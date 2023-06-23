@@ -87,6 +87,8 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %   <results> as a struct with additional details:
 %     mnN - the estimated mean of the noise (1 x voxels)
 %     cN  - the estimated covariance of the noise (voxels x voxels)
+%     shrinklevelN - shrinkage level chosen for cN
+%     shrinklevelD - shrinkage level chosen for the estimated data covariance
 %     mnS - the estimated mean of the signal (1 x voxels)
 %     cS  - the estimated covariance of the signal (voxels x voxels)
 %     cSb - the regularized estimated covariance of the signal (voxels x voxels).
@@ -421,7 +423,7 @@ nc = median(ncdist);
 
 % prepare additional outputs
 clear results;
-varstosave = {'mnN' 'cN' 'mnS' 'cS' 'cSb' 'rapprox' 'sc' 'splitr' 'ncsnr'};
+varstosave = {'mnN' 'cN' 'shrinklevelN' 'shrinklevelD' 'mnS' 'cS' 'cSb' 'rapprox' 'sc' 'splitr' 'ncsnr'};
 for p=1:length(varstosave)
   results.(varstosave{p}) = eval(varstosave{p});
 end
