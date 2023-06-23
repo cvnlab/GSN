@@ -21,9 +21,7 @@ function results = performgsn(data,opt)
 %     mnS - the estimated mean of the signal (1 x voxels)
 %     cS  - the estimated covariance of the signal (voxels x voxels)
 %     cSb - the regularized estimated covariance of the signal (voxels x voxels).
-%           This estimate reflects both a nearest-approximation and 
-%           a post-hoc scaling that is designed to match the data reliability
-%           estimate.
+%           This estimate reflects a nearest-PSD-approximation to cS.
 %     rapprox - the correlation between the nearest-approximation of the 
 %               signal covariance and the original signal covariance
 %     ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
