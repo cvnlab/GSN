@@ -8,8 +8,8 @@ function [m,bad] = convertcovariancetocorrelation(m)
 % that the diagonals are equal to 1, thereby enabling
 % the interpretation of off-diagonal elements as
 % correlation values. This is done by dividing each
-% element by its associated row-wise and column-wise
-% diagonal elements.
+% element by the square root of its associated row-wise
+% and column-wise diagonal elements.
 %
 % This will fail in cases where a diagonal element
 % is 0 or negative. In such cases, we set all 
