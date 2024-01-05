@@ -15,22 +15,26 @@ function results = performgsn(data,opt)
 % Return:
 %   <results> as a struct with:
 %     mnN - the estimated mean of the noise (1 x voxels)
-%     cN  - the estimated covariance of the noise (voxels x voxels)
+%     cN  - the raw estimated covariance of the noise (voxels x voxels)
+%     cNb - the final estimated covariance after biconvex optimization
 %     shrinklevelN - shrinkage level chosen for cN
 %     shrinklevelD - shrinkage level chosen for the estimated data covariance
 %     mnS - the estimated mean of the signal (1 x voxels)
-%     cS  - the estimated covariance of the signal (voxels x voxels)
-%     cSb - the regularized estimated covariance of the signal (voxels x voxels).
-%           This estimate reflects a nearest-PSD-approximation to cS.
-%     rapprox - the correlation between the nearest-approximation of the 
-%               signal covariance and the original signal covariance
+%     cS  - the raw estimated covariance of the signal (voxels x voxels)
+%     cSb - the final estimated covariance after biconvex optimization
 %     ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
 %             This is, for each voxel, the std dev of the estimated signal
 %             distribution divided by the std dev of the estimated noise
-%             distribution. Note that this is computed on the originally
-%             estimated signal covariance and not the regularized signal
-%             covariance. Also, note that we apply positive rectification to 
-%             the signal std dev (to prevent non-sensical negative ncsnr values).
+%             distribution. Note that this is computed on the raw
+%             estimated covariances. Also, note that we apply positive 
+%             rectification (to prevent non-sensical negative ncsnr values).
+%
+% History:
+% - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
+%                    we now have cSb and cNb as the final estimates;
+%                (2) cSb no longer has the scaling baked in and instead we 
+%                    create a separate temporary variable cSb_rsa;
+%                (3) remove the rapprox output
 %
 % Example:
 % data = repmat(2*randn(100,40),[1 1 4]) + 1*randn(100,40,4);
