@@ -38,8 +38,15 @@ if err == 0
 else
 
   % construct nearest PSD matrix (with respect to Frobenius norm)
-  [u,s,v] = svd(c,0);
-  c2 = (c + v*s*v')/2;  % average with symmetric polar factor
+  try
+    [u,s,v] = svd(c,0);
+    c2 = (c + v*s*v')/2;  % average with symmetric polar factor
+  catch  % in some rare cases, the svd fails to converge.
+         % in that case, let's resort to this approach:
+    [v,d] = eig(c);
+    d(d<0) = 0;
+    c2 = v*d*v';
+  end
 
   % check that it is indeed PSD
   [T,err] = cholcov(c2);
