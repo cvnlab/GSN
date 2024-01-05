@@ -27,8 +27,8 @@ function [mn,c,shrinklevel,nll] = calcshrunkencovariance(data,leaveout,shrinklev
 % identified shrinkage level. If not <wantfull>, we just return the 
 % shrunken estimate from (N-1)/N of the data.
 %
-% Note that we try to detect pathological cases and if detected, we will
-% issue warning messages.
+% Note that we try to detect pathological cases in the case of multiple
+% <shrinklevels>, and if detected, we will issue warning messages.
 %
 % The case where <data> has multiple cases along the third dimension
 % is useful for when you have multiple sets of measurements, each of
@@ -148,13 +148,15 @@ end
 [min0,min0ix] = min(nll);
 shrinklevel = shrinklevels(min0ix);
 
-% do some error checking
-if all(isnan(nll))
-  warning('all covariance matrices were singular');
-elseif length(unique(nll(isfinite(nll)))) == 1
-  warning('there was only one unique finite log-likelihood; something might be wrong?');
-elseif ~isfinite(min0)
-  warning('selected likelihood is not finite; something might be wrong?');
+% do some error checking (only in the case of multiple shrinkage levels)
+if length(nll) > 1
+  if all(isnan(nll))
+    warning('all covariance matrices were singular');
+  elseif length(unique(nll(isfinite(nll)))) == 1
+    warning('there was only one unique finite log-likelihood; something might be wrong?');
+  elseif ~isfinite(min0)
+    warning('selected likelihood is not finite; something might be wrong?');
+  end
 end
 
 %% %%%%% PREPARE FINAL OUTPUT
