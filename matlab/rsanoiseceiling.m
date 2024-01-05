@@ -86,29 +86,31 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %     Note that <nc> is simply the median of <ncdist>.
 %   <results> as a struct with additional details:
 %     mnN - the estimated mean of the noise (1 x voxels)
-%     cN  - the estimated covariance of the noise (voxels x voxels)
+%     cN  - the raw estimated covariance of the noise (voxels x voxels)
+%     cNb - the final estimated covariance after biconvex optimization
 %     shrinklevelN - shrinkage level chosen for cN
 %     shrinklevelD - shrinkage level chosen for the estimated data covariance
 %     mnS - the estimated mean of the signal (1 x voxels)
-%     cS  - the estimated covariance of the signal (voxels x voxels)
-%     cSb - the regularized estimated covariance of the signal (voxels x voxels).
-%           This estimate reflects both a nearest-approximation and 
-%           a post-hoc scaling that is designed to match the data reliability
-%           estimate. It is this regularized signal covariance that is
-%           used in the Monte Carlo simulations.
-%     rapprox - the correlation between the nearest-approximation of the 
-%               signal covariance and the original signal covariance
-%     sc - the post-hoc scaling factor that was selected
+%     cS  - the raw estimated covariance of the signal (voxels x voxels)
+%     cSb - the final estimated covariance after biconvex optimization
+%     sc - the post-hoc scaling factor for cSb that was selected and used
+%          for the purposes of the RSA simulations
 %     splitr - the data split-half reliability value that was obtained for the
 %              largest trial number that was evaluated. (We return the median
 %              result across the simulations that were conducted.)
 %     ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
 %             This is, for each voxel, the std dev of the estimated signal
 %             distribution divided by the std dev of the estimated noise
-%             distribution. Note that this is computed on the originally
-%             estimated signal covariance and not the regularized signal
-%             covariance. Also, note that we apply positive rectification to 
-%             the signal std dev (to prevent non-sensical negative ncsnr values).
+%             distribution. Note that this is computed on the raw
+%             estimated covariances. Also, note that we apply positive 
+%             rectification (to prevent non-sensical negative ncsnr values).
+%
+% History:
+% - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
+%                    we now have cSb and cNb as the final estimates;
+%                (2) cSb no longer has the scaling baked in and instead we 
+%                    create a separate temporary variable cSb_rsa;
+%                (3) remove the rapprox output
 %
 % Example:
 % data = repmat(2*randn(100,40),[1 1 4]) + 1*randn(100,40,4);
@@ -200,37 +202,64 @@ cS  =  cD - cN/ntrial;
 if opt.wantverbose, fprintf('done.\n');, end
 
 % prepare some outputs
-sd_noise = sqrt(diag(cN))';   % std of the noise (1 x voxels)
+sd_noise = sqrt(posrect(diag(cN)))';   % std of the noise (1 x voxels)
 sd_signal = sqrt(posrect(diag(cS)))';  % std of the signal (1 x voxels)
 ncsnr = sd_signal ./ sd_noise;   % noise ceiling SNR (1 x voxels)
 
-%% %%%%% REGULARIZATION OF COVARIANCES
+%% %%%%% BICONVEX OPTIMIZATION
 
-if opt.wantverbose, fprintf('Regularizing...');, end
+if opt.wantverbose, fprintf('Performing biconvex optimization...');, end
 
-% calculate nearest approximation for the noise.
-% this is expected to be PSD already. however, small numerical issues
-% may occassionally arise. so, our strategy is to go ahead and
-% run it through the approximation, and to do a quick assertion to 
-% check sanity. note that we just overwrite cN.
-[cN,rapprox0] = constructnearestpsdcovariance(cN);
-assert(rapprox0 > 0.99);
+% init
+cNb = cN;
+cSb_old = cS;
+cNb_old = cN;
 
-% calculate nearest approximation for the signal.
-% this is the more critical case!
-[cSb,rapprox] = constructnearestpsdcovariance(cS);
+while 1
 
-% deal with scaling of the signal covariance matrix
+  % calculate new estimate of cSb
+  temp = cD - cNb/ntrial;
+  cSb = constructnearestpsdcovariance(temp);
+
+  % calculate new estimate of cNb
+  temp = (ncond*(ntrial-1)*ntrial^2) / (ncond*ntrial^2*(ntrial-1)+ncond-1) * cN + (ncond-1) / (ncond*ntrial^2*(ntrial-1)+ncond-1) * ntrial * (cD - cSb);
+  cNb = constructnearestpsdcovariance(temp);
+
+  % check deltas
+  cScheck = corr(cSb_old(:),cSb(:));
+  cNcheck = corr(cNb_old(:),cNb(:));
+  if 0
+    fprintf('1: cSb old to new is %.5f\n',cScheck);
+    fprintf('2: cNb old to new is %.5f\n',cNcheck);
+  end
+  
+  % convergence?
+  if cScheck > 0.999 && cNcheck > 0.999
+    break;
+  end
+
+  % update
+  cSb_old = cSb;
+  cNb_old = cNb;
+  
+end
+
+if opt.wantverbose, fprintf('done.\n');, end
+
+%% %%%%% POST SCALING
+
+% deal with scaling of the signal covariance matrix for RSA purposes
 switch opt.mode
 case 1
   % do nothing
   sc = 1;
+  cSb_rsa = cSb;
   splitr = [];
 case 2
   % scale the nearest approximation to match the average variance 
   % that is observed in the original estimate of the signal covariance.
   sc = posrect(mean(diag(cS))) / mean(diag(cSb));  % notice the posrect to ensure non-negative scaling
-  cSb = constructnearestpsdcovariance(cSb * sc);   % impose scaling and run it through constructnearestpsdcovariance.m for good measure
+  cSb_rsa = constructnearestpsdcovariance(cSb * sc);   % impose scaling and run it through constructnearestpsdcovariance.m for good measure
   splitr = [];
 case 0
 
@@ -350,7 +379,7 @@ case 0
       for nn=1:length(splitnums)
         for si=iicur:iimax
           signal = mvnrnd(mnS,tempcS(:,:,sci),opt.ncconds);         % cond x voxels
-          noise  = mvnrnd(mnN,cN/splitnums(nn),opt.ncconds*2);      % 2*cond x voxels
+          noise  = mvnrnd(mnN,cNb/splitnums(nn),opt.ncconds*2);      % 2*cond x voxels
           measurement1 = signal + noise(1:opt.ncconds,:);           % cond x voxels
           measurement2 = signal + noise(opt.ncconds+1:end,:);       % cond x voxels
           modelsplitr(sci,nn,si) = nanreplace(opt.comparefun(opt.rdmfun(measurement1'),opt.rdmfun(measurement2')));
@@ -380,7 +409,7 @@ case 0
   if opt.wantverbose, fprintf('done.\n');, end
   
   % impose scaling and run it through constructnearestpsdcovariance.m for good measure
-  cSb = constructnearestpsdcovariance(cSb * sc);
+  cSb_rsa = constructnearestpsdcovariance(cSb * sc);
   
   % if the data split r is higher than all of the model split r, we should warn the user.
   temp = median(modelsplitr(:,end,:),3);  % length(scs) x 1
@@ -399,8 +428,6 @@ case 0
   
 end
 
-if opt.wantverbose, fprintf('done.\n');, end
-
 %% %%%%% MONTE CARLO SIMULATIONS FOR RSA NOISE CEILING
 
 if opt.wantverbose, fprintf('Performing Monte Carlo simulations...');, end
@@ -408,8 +435,8 @@ if opt.wantverbose, fprintf('Performing Monte Carlo simulations...');, end
 % perform Monte Carlo simulations
 ncdist = zeros(1,opt.ncsims);
 for rr=1:opt.ncsims
-  signal = mvnrnd(mnS,cSb,opt.ncconds);              % ncconds x voxels
-  noise  = mvnrnd(mnN,cN/opt.nctrials,opt.ncconds);  % ncconds x voxels
+  signal = mvnrnd(mnS,cSb_rsa,opt.ncconds);           % ncconds x voxels
+  noise  = mvnrnd(mnN,cNb/opt.nctrials,opt.ncconds);  % ncconds x voxels
   measurement = signal + noise;                      % ncconds x voxels
   ncdist(rr) = nanreplace(opt.comparefun(opt.rdmfun(signal'),opt.rdmfun(measurement')));
 end
@@ -423,7 +450,7 @@ nc = median(ncdist);
 
 % prepare additional outputs
 clear results;
-varstosave = {'mnN' 'cN' 'shrinklevelN' 'shrinklevelD' 'mnS' 'cS' 'cSb' 'rapprox' 'sc' 'splitr' 'ncsnr'};
+varstosave = {'mnN' 'cN' 'cNb' 'shrinklevelN' 'shrinklevelD' 'mnS' 'cS' 'cSb' 'sc' 'splitr' 'ncsnr'};
 for p=1:length(varstosave)
   results.(varstosave{p}) = eval(varstosave{p});
 end
@@ -448,12 +475,12 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   subplot(4,6,[3 4]); hold on;
   mx = max(abs(cS(:))); if mx==0, mx = 1;, end
   imagesc(cS,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
-  title('Covariance of Signal');
+  title('Covariance of Signal (Raw)');
 
   subplot(4,6,[5 6]); hold on;
-  mx = max(abs(cSb(:))); if mx==0, mx = 1;, end
-  imagesc(cSb,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
-  title('Regularized and scaled');
+  mx = max(abs(cSb_rsa(:))); if mx==0, mx = 1;, end
+  imagesc(cSb_rsa,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
+  title('Optimized and scaled');
   
   subplot(4,6,[7 8]); hold on;
   hist(mnN);
@@ -461,9 +488,9 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   title('Mean of Noise');
 
   subplot(4,6,[9 10]); hold on;
-  mx = max(abs(cN(:))); if mx==0, mx = 1;, end
+  mx = max(abs(cNb(:))); if mx==0, mx = 1;, end
   imagesc(cN,[-mx mx]); axis image tight; set(gca,'YDir','reverse'); colormap(parula); colorbar;
-  title('Covariance of Noise');
+  title('Covariance of Noise (Optimized)');
 
   subplot(4,6,[11 12]); hold on;
   hist(ncsnr);
@@ -510,7 +537,7 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   set(straightline(sc,'v','k-'),'LineWidth',3);
   xlabel('Scaling factor');
   ylabel('R^2 between model and data (%)');
-  title(sprintf('rapprox=%.2f, sc=%.2f, nc=%.3f +/- %.3f',rapprox,sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
+  title(sprintf('sc=%.2f, nc=%.3f +/- %.3f',sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
   
   if isequal(opt.wantfig,1)
   else
