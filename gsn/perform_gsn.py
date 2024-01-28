@@ -1,5 +1,5 @@
 import numpy as np
-from gsn import rsa_noise_ceiling
+from gsn.rsa_noise_ceiling import rsa_noise_ceiling
 
 def perform_gsn(data, opt=None):
     """

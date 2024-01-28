@@ -1,178 +1,516 @@
 import numpy as np
-from gsn.utilities import squish, posrect
+import scipy
+import itertools
+import warnings
+from gsn.utilities import nanreplace
+from gsn.calc_cod import calc_cod
 from gsn.calc_shrunken_covariance import calc_shrunken_covariance
 from gsn.construct_nearest_psd_covariance import construct_nearest_psd_covariance
 import scipy.stats as stats
 from scipy.spatial.distance import pdist
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
+from matplotlib.cm import get_cmap
 
-def rsa_noise_ceiling(data,
-                      wantverbose = True,
-                      rdmfun = lambda x: pdist(x.T,'correlation'),
-                      comparefun = lambda x,y: stats.pearsonr(x,y)[0],
-                      numsim = 20,
-                      nctrials = None,
-                      shrinklevels = np.linspace(0,1,51),
-                      mode = 0):
+def rsa_noise_ceiling(data, opt = None):
     """
-    nc, ncdist, results = rsa_noise_ceiling(data,rdmfun,comparefun,numsim,nctrials)
-
-    <data> is voxels x conditions x trials
-    <wantverbose> (optional) is whether to print status statements. Default: 1.
-    <rdmfun> (optional) is a function that constructs an RDM. Specifically,
-      the function should accept as input a data matrix (e.g. voxels x conditions)
-      and output a RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
-      Default: lambda x: pdist(x.T,'correlation'). This default simply 
-      calculates dissimilarity as 1-r, and then extracts the lower triangle
-      (excluding the diagonal) as a column vector.
-    <comparefun> (optional) is a function that quantifies the similarity of two RDMs.
-      Specifically, the function should accept as input two RDMs (in the format
-      that is returned by <rdmfun>) and output a scalar. 
-      Default: lambda x,y: stats.pearsonr(x,y)[0], returning the Pearson
-      correlation between the two RDMs.
-    <numsim> (optional) is the number of Monte Carlo simulations to run.
-      The final answer is computed as the median across simulations. Default: 20.
-    <nctrials> (optional) is the number of trials over which to average for
-      the purposes of the noise ceiling estimate. For example, setting
-      <nctrials> to 10 will result in the calculation of a noise ceiling 
-      estimate for the case in which responses are averaged across 10 trials
-      measured for each condition. Default: data.shape[2].
-
     Use the GSN (generative modeling of signal and noise) method to estimate
     an RSA noise ceiling.
 
-    Note: if <comparefun> ever returns NaN, we automatically replace these
-    cases with 0. This is a convenient workaround for degenerate cases, 
-    e.g., cases where the signal is generated as all zero.
+    Parameters:
+    data (numpy.ndarray): An array of shape (voxels, conditions, trials). This indicates
+        the measured responses to different conditions on distinct trials. The number of
+        trials must be at least 2.
+    opt (dict, optional): A dictionary with the following optional fields:
+        wantverbose (bool, optional): Whether to print status statements. Default: True.
+        rdmfun (function, optional): A function that constructs an RDM. Specifically, the
+            function should accept as input a data matrix (e.g., voxels x conditions) and
+            output an RDM with some dimensionality (can be a column vector, 2D matrix, etc.).
+            Default: A function that calculates dissimilarity as 1-r, and then extracts the
+            lower triangle (excluding the diagonal) as a column vector.
+        comparefun (function, optional): A function that quantifies the similarity of two RDMs.
+            Specifically, the function should accept as input two RDMs (in the format returned
+            by `rdmfun`) and output a scalar. Default: `np.corrcoef`
+        wantfig (int or str, optional):
+            0 means do not make a figure.
+            1 means plot a figure in a new figure window.
+            A string value means write a figure to filename prefix A (e.g., '/path/to/figure'
+            will result in '/path/to/figure.png' being written).
+            Default: 1.
+        ncsims (int, optional): The number of Monte Carlo simulations to run for the purposes
+            of estimating the RSA noise ceiling. The final answer is computed as the median
+            across simulation results. Default: 50.
+        ncconds (int, optional): The number of conditions to simulate in the Monte Carlo
+            simulations. In theory, the RSA noise ceiling estimate should be invariant to the
+            number of conditions simulated, but the higher the number, the more stable/accurate
+            the results. Default: 50.
+        nctrials (int, optional): The number of trials to target for the RSA noise ceiling
+            estimate. For example, setting `nctrials` to 10 will result in the calculation of
+            a noise ceiling estimate for the case in which responses are averaged across 10
+            trials per condition. Default: data.shape[2].
+        splitmode (int, optional): Controls the way in which trials are divided for the data
+            reliability calculation.
+            0 means use only the maximum split-half number of trials. In the case of an odd
+            number of trials T, use floor(T/2).
+            1 means use numbers of trials increasing by a factor of 2 starting at 1 and
+            including the maximum split-half number of trials. For example, if there are 10
+            trials total, use [1 2 4 5].
+            2 means use the maximum split-half number of trials as well as half of that number
+            (rounding down if necessary). For example, if there are 11 trials total, use [2 5].
+            The primary value of using multiple numbers of trials (e.g., options 1 and 2) is to
+            provide greater insight for the figure inspection that is created. However, in terms
+            of accuracy of RSA noise ceiling estimates, option 0 should be fine (and will result
+            in faster execution).
+            Default: 0.
+        scs (list, optional): Controls the way in which the posthoc scaling factor is
+            determined. Specifically, `scs` is:
+            A list where each element is a non-negative value. This specifies the
+            specific scale factors to evaluate. There is a trade-off between speed of
+            execution and the discretization/precision of the results.
+            Default: np.arange(0, 2.1, 0.1).
+        simchunk (int, optional): The chunk size for the data-splitting and model-based
+            simulations. Default is 50, which indicates to perform 50 simulations for each
+            case, and then increment in steps of 50 if necessary to achieve `simthresh`.
+            Must be 2 or greater.
+        simthresh (float, optional): The value for the robustness metric that must be
+            exceeded in order to halt the data-splitting simulations. The lower this number,
+            the faster the execution time, but the less accurate the results. Default: 10.
+        maxsimnum (int, optional): The maximum number of simulations to perform for the
+            data-splitting simulations. Default: 1000.
 
-    Return:
-      <nc> as a scalar with the noise ceiling estimate.
-      <ncdist> as 1 x <numsim> with the result of each simulation.
-        Note that <nc> is simply the median of <ncdist>.
-      <results> as a struct with additional details:
+    Notes:
+    - If `comparefun` ever returns NaN, we automatically replace these cases with 0.
+      This is a convenient workaround for degenerate cases that might arise, e.g., cases
+      where the signal is generated as all zero.
+    - For splits of the empirical data, it might be the case that exhaustive combinations
+      might be faster than the random-sampling approach. Thus, if all splits (as controlled
+      by `splitmode`) can be exhaustively done in less than or equal to `opt.simchunk`
+      iterations, then we will compute the exhaustive (and therefore exact) solution,
+      instead of the random-sampling approach.
+
+    Returns:
+    nc (float): A scalar with the noise ceiling estimate.
+    ncdist (numpy.ndarray): 1 x ncsims with the result of each Monte Carlo simulation.
+        Note that `nc` is simply the median of `ncdist`.
+    results (dict): A dictionary with additional details:
         mnN - the estimated mean of the noise (1 x voxels)
-        cN  - the estimated covariance of the noise (voxels x voxels)
+        cN - the raw estimated covariance of the noise (voxels x voxels)
+        cNb - the final estimated covariance after biconvex optimization
+        shrinklevelN - shrinkage level chosen for cN
+        shrinklevelD - shrinkage level chosen for the estimated data covariance
         mnS - the estimated mean of the signal (1 x voxels)
-        cS  - the estimated covariance of the signal (voxels x voxels)
-        cSb - the regularized estimated covariance of the signal (voxels x voxels).
-              this estimate reflects both a nearest-approximation and 
-              a post-hoc scaling, and is used in the Monte Carlo simulations.
-        rapprox - the correlation between the nearest-approximation of the 
-                  signal covariance and the original signal covariance
+        cS - the raw estimated covariance of the signal (voxels x voxels)
+        cSb - the final estimated covariance after biconvex optimization
+        sc - the post-hoc scaling factor for cSb that was selected and used
+             for the purposes of the RSA simulations
+        splitr - the data split-half reliability value that was obtained for the
+                 largest trial number that was evaluated. (We return the median
+                 result across the simulations that were conducted.)
+        ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
+                This is, for each voxel, the std dev of the estimated signal
+                distribution divided by the std dev of the estimated noise
+                distribution. Note that this is computed on the raw
+                estimated covariances. Also, note that we apply positive
+                rectification (to prevent non-sensical negative ncsnr values).
+
+    History:
+    - 2024/01/05:
+        (1) Major change to use the biconvex optimization procedure --
+            we now have cSb and cNb as the final estimates;
+        (2) cSb no longer has the scaling baked in and instead we
+            create a separate temporary variable cSb_rsa;
+        (3) Remove the rapprox output.
 
     Example:
-    data = np.random.randn(100,40,4) + 2*np.random.randn(100,40,4);
-    [nc,ncdist,results] = rsa_noise_ceiling(data)
+    data = np.tile(2 * np.random.randn(100, 40), (1, 1, 4)) + np.random.randn(100, 40, 4)
+    nc, ncdist, results = rsa_noise_ceiling(data, {'splitmode': 1})
 
-    internal inputs:
-
-    <shrinklevels> (optional) is like the input to calc_shrunken_covariance.py.
-      Default: np.linspace(0,1,51).
-    <mode> (optional) is
-      0 means do the normal thing
-      1 means to omit the gain adjustment
+    Internal options (not for general use):
+    shrinklevels (list, optional): Like the input to calc_shrunken_covariance.py.
+        Default: [].
+    mode (int, optional):
+        0 means use the data-reliability method.
+        1 means use no scaling.
+        2 means scale to match the un-regularized average variance.
+        Default: 0.
     """
-    
-    # get input dimensions
-    nvox   = data.shape[0]
-    ncond  = data.shape[1]
-    ntrial = data.shape[2]
-    
-    ###### ESTIMATION #####
-    
-    # how many simulated trial averages to perform
-    # by default use number contained in the data
-    if nctrials is None:
-        nctrials = data.shape[2]
 
-    if wantverbose is True:
-        print('Estimating noise covariance...')
-        
+    # Initialize opt as an empty dictionary if it is None
+    if opt is None:
+        opt = {}
+
+    # Set default values for opt
+    opt.setdefault('wantverbose', 1)
+    opt.setdefault('rdmfun', lambda d: pdist(d.T, 'correlation'))
+    opt.setdefault('comparefun', lambda x, y: stats.pearsonr(x, y)[0])
+    opt.setdefault('wantfig', 1)
+    opt.setdefault('ncsims', 50)
+    opt.setdefault('ncconds', 50)
+    opt.setdefault('nctrials', data.shape[2])
+    opt.setdefault('splitmode', 0)
+    opt.setdefault('scs', np.arange(0, 2.1, 0.1))
+    opt.setdefault('simchunk', 50)
+    opt.setdefault('simthresh', 10)
+    opt.setdefault('maxsimnum', 1000)
+    opt.setdefault('shrinklevels', [])
+    opt.setdefault('mode', 0)
+
+    # calc
+    nvox = data.shape[0]
+    ncond = data.shape[1]
+    ntrial = data.shape[2]
+
+    # deal with massaging inputs and sanity checks
+    assert ntrial >= 2, "Number of trials must be at least 2."
+    opt['scs'] = np.unique(opt['scs'])
+    assert np.all(opt['scs'] >= 0), "All elements in 'scs' should be non-negative."
+    assert opt['simchunk'] >= 2, "simchunk must be 2 or greater."
+
+    # ESTIMATION OF COVARIANCES
+
     # estimate noise covariance
-    mnN, cN, shrinklevelN, nllN = calc_shrunken_covariance(data = np.transpose(data,(2,0,1)),
-                                                           shrinklevels = shrinklevels,
-                                                           wantfull = 1)
-    
-    if wantverbose is True:
-        print('done.\n')
-        print('Estimating data covariance...')        
+    if opt['wantverbose']:
+        print('Estimating noise covariance...', end='')
+    mnN, cN, shrinklevelN, nllN = calc_shrunken_covariance(np.transpose(data, (2, 0, 1)),
+                                                         5, opt['shrinklevels'], 1)
+    if opt['wantverbose']:
+        print('done.')
 
     # estimate data covariance
-    mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(data = np.mean(data,2).T,
-                                                           shrinklevels = shrinklevels,
-                                                           wantfull = 1)
-    
-    if wantverbose is True:
-        print('done.\n')
-        print('Estimating signal covariance...')
+    if opt['wantverbose']:
+        print('Estimating data covariance...', end='')
+    mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(np.mean(data, axis=2).T,
+                                                         5, opt['shrinklevels'], 1)
+    if opt['wantverbose']:
+        print('done.')
 
     # estimate signal covariance
+    if opt['wantverbose']:
+        print('Estimating signal covariance...', end='')
     mnS = mnD - mnN
-    cS  =  cD - cN/ntrial
-    
-    if wantverbose is True:
-        print('done.\n')
-        
-    ##### REGULARIZATION #####
-    
-    if wantverbose is True:
-        print('Regularizing...')
+    cS = cD - cN / ntrial
+    if opt['wantverbose']:
+        print('done.')
 
-    # calculate nearest approximation for the noise.
-    # this is expected to be PSD already. however, small numerical issues
-    # may occassionally arise. so, our strategy is to go ahead and
-    # run it through the approximation, and to do a quick assertion to 
-    # check sanity. note that we just overwrite cN.
-    cN,rapprox0 = construct_nearest_psd_covariance(cN)
-    assert(rapprox0 > 0.99)
+    # prepare some outputs
+    sd_noise = np.sqrt(np.maximum(np.diag(cN), 0))   # std of the noise (1 x voxels)
+    sd_signal = np.sqrt(np.maximum(np.diag(cS), 0))  # std of the signal (1 x voxels)
+    ncsnr = sd_signal / sd_noise                     # noise ceiling SNR (1 x voxels)
 
-    # calculate nearest approximation for the signal.
-    # this is the more critical case!
-    cSb,rapprox = construct_nearest_psd_covariance(cS)
+    # BICONVEX OPTIMIZATION
+    if opt['wantverbose']:
+        print('Performing biconvex optimization...', end='')
 
-    # scale the nearest approximation to match the average variance 
-    # that is observed in the original estimate of the signal covariance.
-    if mode == 0:
-        sc = posrect(np.mean(np.diag(cS))) / np.mean(np.diag(cSb))  # notice the posrect to ensure non-negative scaling
-        cSb, _ = construct_nearest_psd_covariance(cSb * sc)   # impose scaling and run it through construct_nearest_psd_covariance.py for good measure
-    elif mode == 1:
-        pass
+    # init
+    cNb = cN
+    cSb_old = cS
+    cNb_old = cN
 
-    if wantverbose is True:
-        print('done.\n')
-        
-    ##### SIMULATIONS #####
-    if wantverbose is True:
-        print('Performing Monte Carlo simulations...')
-        
-    # perform Monte Carlo simulations
-    ncdist = np.zeros((numsim,))
-    for rr in range(numsim):
-        
-        signal = np.random.multivariate_normal(np.squeeze(mnS), cSb, size = ncond) # cond x voxels
-        noise = np.random.multivariate_normal(np.squeeze(mnN), cN, size = ncond * nctrials) # ncond*nctrials x voxels
-        measurement = signal + np.mean(np.reshape(noise, (ncond, nctrials, nvox)), 1)  # cond x voxels
-        
-        ncdist[rr] = comparefun(rdmfun(signal.T), rdmfun(measurement.T))
-        
-    if wantverbose is True:
-        print('done.\n')
+    while True:
+        # calculate new estimate of cSb
+        temp = cD - cNb / ntrial
+        cSb = construct_nearest_psd_covariance(temp)
 
-    ##### FINISH UP #####
-    
-    # if comparefun ever outputs NaN, set these cases to 0.
-    # for example, you might be correlating an all-zero signal
-    # with some data, which may result in NaN.
-    ncdist[np.isnan(ncdist)] = 0
+        # calculate new estimate of cNb
+        temp = (ncond * (ntrial - 1) * ntrial**2) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * cN \
+               + (ncond - 1) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * ntrial * (cD - cSb)
+        cNb = construct_nearest_psd_covariance(temp)
 
-    # compute median across simulations
+        # check deltas
+        cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
+        cNcheck = np.corrcoef(cNb_old.flatten(), cNb.flatten())[0, 1]
+
+        # convergence?
+        if cScheck > 0.999 and cNcheck > 0.999:
+            break
+
+        # update
+        cSb_old = cSb
+        cNb_old = cNb
+
+    if opt['wantverbose']:
+        print('done.')
+
+    # POST SCALING
+    if opt['mode'] == 1:
+        # do nothing
+        sc = 1
+        cSb_rsa = cSb
+        splitr = []
+    elif opt['mode'] == 2:
+        # scale the nearest approximation to match the average variance
+        # observed in the original estimate of the signal covariance
+        sc = np.maximum(np.mean(np.diag(cS)), 0) / np.mean(np.diag(cSb))  # ensure non-negative scaling
+        cSb_rsa = construct_nearest_psd_covariance(cSb * sc)  # scaling and run through construct_nearest_psdcovariance
+        splitr = []
+    elif opt['mode'] == 0:
+        # calculate the number of trials to put into the two splits
+        if opt['splitmode'] == 0:
+            splitnums = [np.floor(ntrial / 2)]
+        elif opt['splitmode'] == 1:
+            splitnums = np.unique([2**i for i in range(int(np.floor(np.log2(ntrial / 2))))] + [np.floor(ntrial / 2)])
+        elif opt['splitmode'] == 2:
+            splitnums = [np.floor(np.floor(ntrial / 2) / 2), np.floor(ntrial / 2)]
+            splitnums = [num for num in splitnums if num > 0]
+
+    # calculate data split reliability
+    if opt['wantverbose']:
+        print('Calculating data split reliability...', end='')
+
+    # first, we need to figure out if we can do exhaustive combinations
+    doexhaustive = True
+    combolist = {}
+    validmatrix = {}
+    for nn in range(len(splitnums) - 1, -1, -1):
+        # if the dimensionality seems too large, just get out
+        if scipy.special.comb(ntrial, splitnums[nn]) > 2 * opt['simchunk']:
+            doexhaustive = False
+            break
+
+        # calculate the full set of possibilities
+        combolist[nn] = list(itertools.combinations(range(ntrial), splitnums[nn]))
+        ncomb = len(combolist[nn])
+
+        # figure out pairs of splits that are mutually exclusive
+        validmatrix[nn] = np.zeros((ncomb, ncomb), dtype=int)
+        for r in range(ncomb):
+            for c in range(ncomb):
+                if c <= r:  # only the upper triangle as potentially valid
+                    continue
+                if not set(combolist[nn][r]).intersection(set(combolist[nn][c])):
+                    validmatrix[nn][r, c] = 1
+
+        # if the number of combinations to process is more than opt.simchunk, just give up
+        if np.sum(validmatrix[nn]) > opt['simchunk']:
+            doexhaustive = False
+            break
+
+    # if it looks like we can do it exhaustively, do it!
+    if doexhaustive:
+        if opt['wantverbose']:
+            print('doing exhaustive set of combinations...', end='')
+        datasplitr = np.zeros(len(splitnums))
+        for nn in range(len(splitnums)):
+            ncomb = len(combolist[nn])
+            temp = []
+            for r in range(ncomb):
+                for c in range(ncomb):
+                    if validmatrix[nn][r, c]:
+                        temp.append(nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, combolist[nn][r]], axis=2)),
+                                                                 opt['rdmfun'](np.mean(data[:, :, combolist[nn][c]], axis=2)))))
+            datasplitr[nn] = np.median(temp)
+        splitr = datasplitr[-1]  # result for the "most trials" data split case
+
+    # otherwise, do the random-sampling approach
+    else:
+        iicur = 1
+        iimax = opt['simchunk']
+        datasplitr = np.zeros((len(splitnums), iimax))
+        while True:
+            for nn in range(len(splitnums)):
+                for si in range(iicur, iimax):
+                    temp = np.random.permutation(ntrial)
+                    datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
+                                                                      opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
+            robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
+            if robustness > opt['simthresh']:
+                break
+            iicur = iimax
+            iimax += opt['simchunk']
+            if iimax > opt['maxsimnum']:
+                break
+            datasplitr.resize((len(splitnums), iimax))
+
+        splitr = np.median(datasplitr[-1])  # median result for the "most trials" data split case
+
+    if opt['wantverbose']:
+        print('done.')
+
+    # calculate model-based split reliability
+    if opt['wantverbose']:
+        print('Calculating model split reliability...', end='')
+    iicur = 1  # current sim number
+    iimax = opt['simchunk']  # current targeted max
+    modelsplitr = np.zeros((len(opt['scs']), len(splitnums), iimax))
+
+    # precompute
+    tempcS = np.zeros((cSb.shape[0], cSb.shape[1], len(opt['scs'])))
+    for sci in range(len(opt['scs'])):
+        tempcS[:, :, sci] = construct_nearest_psd_covariance(cSb * opt['scs'][sci])
+
+    while True:
+        robustness = np.zeros(len(opt['scs']))
+        for sci in range(len(opt['scs'])):
+            for nn in range(len(splitnums)):
+                for si in range(iicur, iimax):
+                    signal = np.random.multivariate_normal(mnS, tempcS[:, :, sci], opt['ncconds'])  # cond x voxels
+                    noise = np.random.multivariate_normal(mnN, cNb / splitnums[nn], opt['ncconds'] * 2)  # 2*cond x voxels
+                    measurement1 = signal + noise[:opt['ncconds'], :]  # cond x voxels
+                    measurement2 = signal + noise[opt['ncconds']:, :]  # cond x voxels
+                    modelsplitr[sci, nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](measurement1.T),
+                                                                           opt['rdmfun'](measurement2.T)))
+
+            temp = modelsplitr[sci, :, :].reshape(-1, modelsplitr.shape[2])
+            robustness[sci] = np.mean(np.abs(np.median(temp, axis=1)) / (scipy.stats.iqr(temp, axis=1) / 2 / np.sqrt(temp.shape[1])))
+
+        robustness = np.mean(robustness)
+        if robustness > opt['simthresh']:
+            break
+        iicur = iimax + 1
+        iimax += opt['simchunk']
+        if iimax > opt['maxsimnum']:
+            break
+        modelsplitr.resize((len(opt['scs']), len(splitnums), iimax))
+
+    if opt['wantverbose']:
+        print('done.')
+
+    # calculate R^2 between model-based results and the data results and find the max
+    if opt['wantverbose']:
+        print('Finding best model...', end='')
+    # Assuming calccod is a function that calculates coefficient of determination
+    R2s = calc_cod(np.median(modelsplitr, axis=2), np.tile(np.median(datasplitr, axis=1), (len(opt['scs']), 1)), 2, None, 0)
+    bestii = np.argmax(R2s)
+    sc = opt['scs'][bestii]
+    if opt['wantverbose']:
+        print('done.')
+
+    # impose scaling and run it through construct_nearest_psdcovariance
+    cSb_rsa = construct_nearest_psd_covariance(cSb * sc)
+
+    # Warn if data split r is higher than all of the model split r
+    temp = np.median(modelsplitr[:, -1, :], axis=2)
+    if splitr > np.max(temp):
+        warnings.warn('The empirical data split r seems to be out of the range of the model. '
+                      'Something may be wrong; results may be inaccurate. Consider increasing the <scs> input.')
+
+    # Sanity check on the smoothness of the R2 results
+    if len(R2s) >= 4:
+        smoothed_R2s = np.convolve.convolve(R2s, [1/3, 1/3, 1/3], mode='valid')
+        temp_R2 = calc_cod(smoothed_R2s, R2s[1:-1])  # Assuming calccod is implemented
+        if temp_R2 < 90:
+            warnings.warn(f'The R2 values appear to be non-smooth (smooth function explains only {temp_R2:.1f}% variance). '
+                          'Something may be wrong; results may be inaccurate. Consider increasing simchunk, simthresh, and/or maxsimnum.')
+
+
+    # Performing Monte Carlo simulations for RSA noise ceiling
+    if opt['wantverbose']:
+        print('Performing Monte Carlo simulations...', end='')
+    ncdist = np.zeros(opt['ncsims'])
+    for rr in range(opt['ncsims']):
+        signal = np.random.multivariate_normal(mnS, cSb_rsa, opt['ncconds'])
+        noise = np.random.multivariate_normal(mnN, cNb / opt['nctrials'], opt['ncconds'])
+        measurement = signal + noise
+        ncdist[rr] = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
+
+    if opt['wantverbose']:
+        print('done.')
+
+    # Finish up
+    # Compute median across simulations
     nc = np.median(ncdist)
 
-    # prepare additional outputs
-    results = {'mnN': mnN,
-               'cN': cN,
-               'mnS': mnS,
-               'cS': cS,
-               'cSb': cSb,
-               'rapprox': rapprox}
-                                                        
-    return nc,ncdist,results
+    # Prepare additional outputs
+    results = {
+        'mnN': mnN,
+        'cN': cN,
+        'cNb': cNb,
+        'shrinklevelN': shrinklevelN,
+        'shrinklevelD': shrinklevelD,
+        'mnS': mnS,
+        'cS': cS,
+        'cSb': cSb,
+        'sc': sc,
+        'splitr': splitr,
+        'ncsnr': ncsnr
+    }
+
+    # MAKE A FIGURE
+    if opt['mode'] == 0 and opt['wantfig'] != 0:
+        if opt['wantverbose']:
+            print('Creating figure...')
+
+        plt.figure(figsize=(10, 10))  # Adjusted size for Python
+
+        # Mean of Signal
+        plt.subplot(4, 6, (1, 2))
+        plt.hist(mnS, bins=30)  # Assuming 30 bins for histogram
+        plt.ylabel('Frequency')
+        plt.title('Mean of Signal')
+
+        # Covariance of Signal (Raw)
+        plt.subplot(4, 6, (3, 4))
+        mx = np.max(np.abs(cS)) if np.max(np.abs(cS)) != 0 else 1
+        plt.imshow(cS, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
+        plt.colorbar()
+        plt.title('Covariance of Signal (Raw)')
+
+        # Optimized and scaled
+        plt.subplot(4, 6, (5, 6))
+        mx = np.max(np.abs(cSb_rsa)) if np.max(np.abs(cSb_rsa)) != 0 else 1
+        plt.imshow(cSb_rsa, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
+        plt.colorbar()
+        plt.title('Optimized and scaled')
+
+        # Mean of Noise
+        plt.subplot(4, 6, (7, 8))
+        plt.hist(mnN, bins=30)  # Assuming 30 bins for histogram
+        plt.ylabel('Frequency')
+        plt.title('Mean of Noise')
+
+        # Covariance of Noise (Optimized)
+        plt.subplot(4, 6, (9, 10))
+        mx = np.max(np.abs(cNb)) if np.max(np.abs(cNb)) != 0 else 1
+        plt.imshow(cNb, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
+        plt.colorbar()
+        plt.title('Covariance of Noise (Optimized)')
+
+        # Noise ceiling SNR
+        plt.subplot(4, 6, (11, 12))
+        plt.hist(ncsnr, bins=30)  # Assuming 30 bins for histogram
+        plt.ylabel('Frequency')
+        plt.title('Noise ceiling SNR')
+
+        # Model and Data Similarity
+        plt.subplot(4, 6, (13, 14, 15, 19, 20, 21))
+        cmap0 = get_cmap('viridis')(np.linspace(0, 1, len(opt['scs'])))
+        for sci in range(len(opt['scs'])):
+            md0 = np.median(modelsplitr[sci, :, :], axis=2)
+            se0 = scipy.stats.iqr(modelsplitr[sci, :, :], axis=2) / 2 / np.sqrt(modelsplitr.shape[2])
+            plt.errorbar(splitnums, md0, yerr=se0, fmt='o-', color=cmap0[sci], linewidth=1)
+
+            lw0 = 3 if opt['scs'][sci] == sc else 1
+            mark0 = 'o' if opt['scs'][sci] == sc else 'x'
+            plt.plot(splitnums, md0, 'r' + mark0 + '-', color=cmap0[sci], linewidth=lw0)
+
+        md0 = np.median(datasplitr, axis=1)
+        sd0 = scipy.stats.iqr(datasplitr, axis=1) / 2
+        se0 = sd0 / np.sqrt(datasplitr.shape[1])
+        plt.errorbar(splitnums, md0, yerr=sd0, fmt='k-', linewidth=1)
+        plt.errorbar(splitnums, md0, yerr=se0, fmt='k-', linewidth=3)
+        plt.plot(splitnums, md0, 'kd-', linewidth=3)
+        plt.xlim([np.min(splitnums) - 1, np.max(splitnums) + 1])
+        plt.xlabel('Number of trials in each split')
+        plt.ylabel('Similarity (comparefun output)')
+
+        if doexhaustive:
+            plt.title(f'Data (ALL sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr:.3f}')
+        else:
+            plt.title(f'Data ({datasplitr.shape[1]} sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr:.3f}')
+
+        # Scaling factor and R2
+        plt.subplot(4, 6, (16, 17, 18, 22, 23, 24))
+        plt.plot(opt['scs'], R2s, 'ro-')
+        plt.axvline(x=sc, color='k', linestyle='-', linewidth=3)
+        plt.xlabel('Scaling factor')
+        plt.ylabel('R^2 between model and data (%)')
+        plt.title(f'sc={sc:.2f}, nc={nc:.3f} +/- {scipy.stats.iqr(ncdist)/2/np.sqrt(len(ncdist)):.3f}')
+
+        # Saving the figure
+        if opt['wantfig'] != 1:
+            plt.savefig(opt['wantfig'])
+
+        if opt['wantverbose']:
+            print('done.')
+
+    return nc, ncdist, results

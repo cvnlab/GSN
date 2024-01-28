@@ -37,8 +37,8 @@ def calc_shrunken_covariance(data,
     identified shrinkage level. If not <wantfull>, we just return the 
     shrunken estimate from (N-1)/N of the data.
 
-    Note that we try to detect pathological cases and if detected, we will
-    issue warning messages.
+    Note that we try to detect pathological cases in the case of multiple
+    <shrinklevels>, and if detected, we will issue warning messages.
 
     The case where <data> has multiple cases along the third dimension
     is useful for when you have multiple sets of measurements, each of
@@ -167,17 +167,25 @@ def calc_shrunken_covariance(data,
     min0ix = np.argmin(nll)
     
     shrinklevel = shrinklevels[min0ix]
-    
-    # do some error checking
+    # Error checking (only in the case of multiple shrinkage levels)
     nll = nll.astype(float)
-    
-    if np.all(np.isnan(nll)):
-        warnings.warn('all covariance matrices were singular')
-    elif len(np.unique(nll[np.isfinite(nll)])) == 1:
-        warnings.warn('there was only one unique finite log-likelihood; something might be wrong?')
-    elif np.logical_not(np.isfinite(nll[min0ix])):
-        warnings.warn('selected likelihood is not finite; something might be wrong?')
-    
+
+    if len(nll) > 1:
+        if np.all(np.isnan(nll)):
+            warnings.warn('All covariance matrices were singular.')
+        elif len(np.unique(nll[np.isfinite(nll)])) == 1:
+            warnings.warn('There was only one unique finite log-likelihood; something might be wrong?')
+        elif not np.isfinite(min0ix):
+            warnings.warn('Selected likelihood is not finite; something might be wrong?')
+
+    # old
+    # if np.all(np.isnan(nll)):
+    #     warnings.warn('all covariance matrices were singular')
+    # elif len(np.unique(nll[np.isfinite(nll)])) == 1:
+    #     warnings.warn('there was only one unique finite log-likelihood; something might be wrong?')
+    # elif np.logical_not(np.isfinite(nll[min0ix])):
+    #     warnings.warn('selected likelihood is not finite; something might be wrong?')
+
     ############ PREPARE FINAL OUTPUT
     
     # in this case, we have to re-estimate using the full dataset
