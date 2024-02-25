@@ -10,7 +10,7 @@ def calc_shrunken_covariance(data,
                            shrinklevels = np.linspace(0,1,51), 
                            wantfull = 0):
     """
-    mn, c, shrinklevel, nll = calc_shrunken_covariance(data,leaveout,shrinklevels,wantfull)
+    mn, c, shrinklevels, nll = calc_shrunken_covariance(data,leaveout,shrinklevels,wantfull)
 
     <data> is a matrix with dimensions observations x variables.
     There can be more variables than observations. In addition, the 

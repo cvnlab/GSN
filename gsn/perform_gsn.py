@@ -54,7 +54,7 @@ def perform_gsn(data, opt=None):
     opt['ncsims'] = 0
     opt['wantfig'] = 0
     if opt['wantshrinkage']:
-        opt['shrinklevels'] = []  # allow default shrinkage levels
+        opt['shrinklevels'] = np.linspace(0,1,51) # allow default shrinkage levels
     else:
         opt['shrinklevels'] = [1]  # force only full estimation
 

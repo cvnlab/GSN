@@ -152,7 +152,7 @@ def rsa_noise_ceiling(data, opt = None):
     opt.setdefault('simchunk', 50)
     opt.setdefault('simthresh', 10)
     opt.setdefault('maxsimnum', 1000)
-    opt.setdefault('shrinklevels', [])
+    opt.setdefault('shrinklevels', np.linspace(0,1,51))
     opt.setdefault('mode', 0)
 
     # calc
