@@ -209,12 +209,12 @@ def rsa_noise_ceiling(data, opt = None):
     while True:
         # calculate new estimate of cSb
         temp = cD - cNb / ntrial
-        cSb = construct_nearest_psd_covariance(temp)
+        cSb, _ = construct_nearest_psd_covariance(temp)
 
         # calculate new estimate of cNb
         temp = (ncond * (ntrial - 1) * ntrial**2) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * cN \
                + (ncond - 1) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * ntrial * (cD - cSb)
-        cNb = construct_nearest_psd_covariance(temp)
+        cNb, _ = construct_nearest_psd_covariance(temp)
 
         # check deltas
         cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
@@ -241,7 +241,7 @@ def rsa_noise_ceiling(data, opt = None):
         # scale the nearest approximation to match the average variance
         # observed in the original estimate of the signal covariance
         sc = np.maximum(np.mean(np.diag(cS)), 0) / np.mean(np.diag(cSb))  # ensure non-negative scaling
-        cSb_rsa = construct_nearest_psd_covariance(cSb * sc)  # scaling and run through construct_nearest_psdcovariance
+        cSb_rsa, _ = construct_nearest_psd_covariance(cSb * sc)  # scaling and run through construct_nearest_psdcovariance
         splitr = []
     elif opt['mode'] == 0:
         # calculate the number of trials to put into the two splits
@@ -253,145 +253,144 @@ def rsa_noise_ceiling(data, opt = None):
             splitnums = [np.floor(np.floor(ntrial / 2) / 2), np.floor(ntrial / 2)]
             splitnums = [num for num in splitnums if num > 0]
 
-    # calculate data split reliability
-    if opt['wantverbose']:
-        print('Calculating data split reliability...', end='')
-
-    # first, we need to figure out if we can do exhaustive combinations
-    doexhaustive = True
-    combolist = {}
-    validmatrix = {}
-    for nn in range(len(splitnums) - 1, -1, -1):
-        # if the dimensionality seems too large, just get out
-        if scipy.special.comb(ntrial, splitnums[nn]) > 2 * opt['simchunk']:
-            doexhaustive = False
-            break
-
-        # calculate the full set of possibilities
-        combolist[nn] = list(itertools.combinations(range(ntrial), splitnums[nn]))
-        ncomb = len(combolist[nn])
-
-        # figure out pairs of splits that are mutually exclusive
-        validmatrix[nn] = np.zeros((ncomb, ncomb), dtype=int)
-        for r in range(ncomb):
-            for c in range(ncomb):
-                if c <= r:  # only the upper triangle as potentially valid
-                    continue
-                if not set(combolist[nn][r]).intersection(set(combolist[nn][c])):
-                    validmatrix[nn][r, c] = 1
-
-        # if the number of combinations to process is more than opt.simchunk, just give up
-        if np.sum(validmatrix[nn]) > opt['simchunk']:
-            doexhaustive = False
-            break
-
-    # if it looks like we can do it exhaustively, do it!
-    if doexhaustive:
+        # calculate data split reliability
         if opt['wantverbose']:
-            print('doing exhaustive set of combinations...', end='')
-        datasplitr = np.zeros(len(splitnums))
-        for nn in range(len(splitnums)):
+            print('Calculating data split reliability...', end='')
+
+        # first, we need to figure out if we can do exhaustive combinations
+        doexhaustive = True
+        combolist = {}
+        validmatrix = {}
+        for nn in range(len(splitnums) - 1, -1, -1):
+            # if the dimensionality seems too large, just get out
+            if scipy.special.comb(ntrial, splitnums[nn]) > 2 * opt['simchunk']:
+                doexhaustive = False
+                break
+
+            # calculate the full set of possibilities
+            combolist[nn] = list(itertools.combinations(range(ntrial), splitnums[nn]))
             ncomb = len(combolist[nn])
-            temp = []
+
+            # figure out pairs of splits that are mutually exclusive
+            validmatrix[nn] = np.zeros((ncomb, ncomb), dtype=int)
             for r in range(ncomb):
                 for c in range(ncomb):
-                    if validmatrix[nn][r, c]:
-                        temp.append(nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, combolist[nn][r]], axis=2)),
-                                                                 opt['rdmfun'](np.mean(data[:, :, combolist[nn][c]], axis=2)))))
-            datasplitr[nn] = np.median(temp)
-        splitr = datasplitr[-1]  # result for the "most trials" data split case
+                    if c <= r:  # only the upper triangle as potentially valid
+                        continue
+                    if not set(combolist[nn][r]).intersection(set(combolist[nn][c])):
+                        validmatrix[nn][r, c] = 1
 
-    # otherwise, do the random-sampling approach
-    else:
-        iicur = 1
-        iimax = opt['simchunk']
-        datasplitr = np.zeros((len(splitnums), iimax))
-        while True:
+            # if the number of combinations to process is more than opt.simchunk, just give up
+            if np.sum(validmatrix[nn]) > opt['simchunk']:
+                doexhaustive = False
+                break
+
+        # if it looks like we can do it exhaustively, do it!
+        if doexhaustive:
+            if opt['wantverbose']:
+                print('doing exhaustive set of combinations...', end='')
+            datasplitr = np.zeros(len(splitnums))
             for nn in range(len(splitnums)):
-                for si in range(iicur, iimax):
-                    temp = np.random.permutation(ntrial)
-                    datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
-                                                                      opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
-            robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
+                ncomb = len(combolist[nn])
+                temp = []
+                for r in range(ncomb):
+                    for c in range(ncomb):
+                        if validmatrix[nn][r, c]:
+                            temp.append(nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, combolist[nn][r]], axis=2)),
+                                                                    opt['rdmfun'](np.mean(data[:, :, combolist[nn][c]], axis=2)))))
+                datasplitr[nn] = np.median(temp)
+            splitr = datasplitr[-1]  # result for the "most trials" data split case
+
+        # otherwise, do the random-sampling approach
+        else:
+            iicur = 1
+            iimax = opt['simchunk']
+            datasplitr = np.zeros((len(splitnums), iimax))
+            while True:
+                for nn in range(len(splitnums)):
+                    for si in range(iicur, iimax):
+                        temp = np.random.permutation(ntrial)
+                        datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
+                                                                        opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
+                robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
+                if robustness > opt['simthresh']:
+                    break
+                iicur = iimax
+                iimax += opt['simchunk']
+                if iimax > opt['maxsimnum']:
+                    break
+                datasplitr.resize((len(splitnums), iimax))
+
+            splitr = np.median(datasplitr[-1])  # median result for the "most trials" data split case
+
+        if opt['wantverbose']:
+            print('done.')
+
+        # calculate model-based split reliability
+        if opt['wantverbose']:
+            print('Calculating model split reliability...', end='')
+        iicur = 1  # current sim number
+        iimax = opt['simchunk']  # current targeted max
+        modelsplitr = np.zeros((len(opt['scs']), len(splitnums), iimax))
+
+        # precompute
+        tempcS = np.zeros((cSb.shape[0], cSb.shape[1], len(opt['scs'])))
+        for sci in range(len(opt['scs'])):
+            tempcS[:, :, sci], _ = construct_nearest_psd_covariance(cSb * opt['scs'][sci])
+
+        while True:
+            robustness = np.zeros(len(opt['scs']))
+            for sci in range(len(opt['scs'])):
+                for nn in range(len(splitnums)):
+                    for si in range(iicur, iimax):
+                        signal = np.random.multivariate_normal(mnS, tempcS[:, :, sci], opt['ncconds'])  # cond x voxels
+                        noise = np.random.multivariate_normal(mnN, cNb / splitnums[nn], opt['ncconds'] * 2)  # 2*cond x voxels
+                        measurement1 = signal + noise[:opt['ncconds'], :]  # cond x voxels
+                        measurement2 = signal + noise[opt['ncconds']:, :]  # cond x voxels
+                        modelsplitr[sci, nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](measurement1.T),
+                                                                            opt['rdmfun'](measurement2.T)))
+
+                temp = modelsplitr[sci, :, :].reshape(-1, modelsplitr.shape[2])
+                robustness[sci] = np.mean(np.abs(np.median(temp, axis=1)) / (scipy.stats.iqr(temp, axis=1) / 2 / np.sqrt(temp.shape[1])))
+
+            robustness = np.mean(robustness)
             if robustness > opt['simthresh']:
                 break
-            iicur = iimax
+            iicur = iimax + 1
             iimax += opt['simchunk']
             if iimax > opt['maxsimnum']:
                 break
-            datasplitr.resize((len(splitnums), iimax))
+            modelsplitr.resize((len(opt['scs']), len(splitnums), iimax))
 
-        splitr = np.median(datasplitr[-1])  # median result for the "most trials" data split case
+        if opt['wantverbose']:
+            print('done.')
 
-    if opt['wantverbose']:
-        print('done.')
+        # calculate R^2 between model-based results and the data results and find the max
+        if opt['wantverbose']:
+            print('Finding best model...', end='')
+        # Assuming calccod is a function that calculates coefficient of determination
+        R2s = calc_cod(np.median(modelsplitr, axis=2), np.tile(np.median(datasplitr, axis=1), (len(opt['scs']), 1)), 2, None, 0)
+        bestii = np.argmax(R2s)
+        sc = opt['scs'][bestii]
+        if opt['wantverbose']:
+            print('done.')
 
-    # calculate model-based split reliability
-    if opt['wantverbose']:
-        print('Calculating model split reliability...', end='')
-    iicur = 1  # current sim number
-    iimax = opt['simchunk']  # current targeted max
-    modelsplitr = np.zeros((len(opt['scs']), len(splitnums), iimax))
+        # impose scaling and run it through construct_nearest_psdcovariance
+        cSb_rsa, _ = construct_nearest_psd_covariance(cSb * sc)
 
-    # precompute
-    tempcS = np.zeros((cSb.shape[0], cSb.shape[1], len(opt['scs'])))
-    for sci in range(len(opt['scs'])):
-        tempcS[:, :, sci] = construct_nearest_psd_covariance(cSb * opt['scs'][sci])
+        # Warn if data split r is higher than all of the model split r
+        temp = np.median(modelsplitr[:, -1, :], axis=2)
+        if splitr > np.max(temp):
+            warnings.warn('The empirical data split r seems to be out of the range of the model. '
+                        'Something may be wrong; results may be inaccurate. Consider increasing the <scs> input.')
 
-    while True:
-        robustness = np.zeros(len(opt['scs']))
-        for sci in range(len(opt['scs'])):
-            for nn in range(len(splitnums)):
-                for si in range(iicur, iimax):
-                    signal = np.random.multivariate_normal(mnS, tempcS[:, :, sci], opt['ncconds'])  # cond x voxels
-                    noise = np.random.multivariate_normal(mnN, cNb / splitnums[nn], opt['ncconds'] * 2)  # 2*cond x voxels
-                    measurement1 = signal + noise[:opt['ncconds'], :]  # cond x voxels
-                    measurement2 = signal + noise[opt['ncconds']:, :]  # cond x voxels
-                    modelsplitr[sci, nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](measurement1.T),
-                                                                           opt['rdmfun'](measurement2.T)))
-
-            temp = modelsplitr[sci, :, :].reshape(-1, modelsplitr.shape[2])
-            robustness[sci] = np.mean(np.abs(np.median(temp, axis=1)) / (scipy.stats.iqr(temp, axis=1) / 2 / np.sqrt(temp.shape[1])))
-
-        robustness = np.mean(robustness)
-        if robustness > opt['simthresh']:
-            break
-        iicur = iimax + 1
-        iimax += opt['simchunk']
-        if iimax > opt['maxsimnum']:
-            break
-        modelsplitr.resize((len(opt['scs']), len(splitnums), iimax))
-
-    if opt['wantverbose']:
-        print('done.')
-
-    # calculate R^2 between model-based results and the data results and find the max
-    if opt['wantverbose']:
-        print('Finding best model...', end='')
-    # Assuming calccod is a function that calculates coefficient of determination
-    R2s = calc_cod(np.median(modelsplitr, axis=2), np.tile(np.median(datasplitr, axis=1), (len(opt['scs']), 1)), 2, None, 0)
-    bestii = np.argmax(R2s)
-    sc = opt['scs'][bestii]
-    if opt['wantverbose']:
-        print('done.')
-
-    # impose scaling and run it through construct_nearest_psdcovariance
-    cSb_rsa = construct_nearest_psd_covariance(cSb * sc)
-
-    # Warn if data split r is higher than all of the model split r
-    temp = np.median(modelsplitr[:, -1, :], axis=2)
-    if splitr > np.max(temp):
-        warnings.warn('The empirical data split r seems to be out of the range of the model. '
-                      'Something may be wrong; results may be inaccurate. Consider increasing the <scs> input.')
-
-    # Sanity check on the smoothness of the R2 results
-    if len(R2s) >= 4:
-        smoothed_R2s = np.convolve.convolve(R2s, [1/3, 1/3, 1/3], mode='valid')
-        temp_R2 = calc_cod(smoothed_R2s, R2s[1:-1])  # Assuming calccod is implemented
-        if temp_R2 < 90:
-            warnings.warn(f'The R2 values appear to be non-smooth (smooth function explains only {temp_R2:.1f}% variance). '
-                          'Something may be wrong; results may be inaccurate. Consider increasing simchunk, simthresh, and/or maxsimnum.')
-
+        # Sanity check on the smoothness of the R2 results
+        if len(R2s) >= 4:
+            smoothed_R2s = np.convolve.convolve(R2s, [1/3, 1/3, 1/3], mode='valid')
+            temp_R2 = calc_cod(smoothed_R2s, R2s[1:-1])  # Assuming calccod is implemented
+            if temp_R2 < 90:
+                warnings.warn(f'The R2 values appear to be non-smooth (smooth function explains only {temp_R2:.1f}% variance). '
+                            'Something may be wrong; results may be inaccurate. Consider increasing simchunk, simthresh, and/or maxsimnum.')
 
     # Performing Monte Carlo simulations for RSA noise ceiling
     if opt['wantverbose']:

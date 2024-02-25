@@ -63,7 +63,7 @@ def perform_gsn(data, opt=None):
     results = rsa_noise_ceiling(data, opt)[2]
 
     # Remove 'sc' and 'splitr' from results
-    #results.pop('sc', None)
-    # results.pop('splitr', None)
+    results.pop('sc', None)
+    results.pop('splitr', None)
 
     return results
