@@ -44,10 +44,20 @@ def construct_nearest_psd_covariance(c1):
     except:
                 
         # construct nearest PSD matrix (with respect to Frobenius norm)
-        u, s, v = np.linalg.svd(c1, full_matrices=True)
-        
-        c2 = (c1 + np.matmul(np.matmul(v.T,np.diag(s)), v)) / 2
-        
+        try:
+            # Singular Value Decomposition
+            u, s, v = np.linalg.svd(c1, full_matrices=True)
+            c2 = (c1 + v.T @ np.diag(s) @ v) / 2  # Average with symmetric polar factor
+        except np.linalg.LinAlgError:  # If SVD fails to converge
+            # Eigendecomposition
+            v, d = np.linalg.eig(c1)
+            d[d < 0] = 0
+            c2 = v @ np.diag(d) @ v.T
+
+        # old
+        #u, s, v = np.linalg.svd(c1, full_matrices=True)
+        #c2 = (c1 + np.matmul(np.matmul(v.T,np.diag(s)), v)) / 2
+
         # check that it is indeed PSD
         
         try: 
