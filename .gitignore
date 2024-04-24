@@ -77,6 +77,9 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Matlab data files
+*.mat
+
 # IPython
 profile_default/
 ipython_config.py
