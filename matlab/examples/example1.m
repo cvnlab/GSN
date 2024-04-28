@@ -1,3 +1,23 @@
+%% Example 1: Using GSN to estimate signal and noise
+
+% GSN is a method that estimates signal and noise distributions that
+% underlie neural response measurements.
+% 
+% The purpose of this Example 1 is to guide the user through basic calls 
+% to GSN, using a representative, small-scale test dataset. The goal is 
+% to show the full process of calling GSN, inspecting noise ceiling (ncsnr) 
+% values, visualizing signal and noise covariance matrices, and performing PCA.
+%
+% Users encountering bugs, unexpected outputs, or other issues regarding 
+% GSN shouldn't hesitate to raise an issue on GitHub:
+% https://github.com/cvnlab/GSN/issues
+% 
+% The example data have dimensionality 100 voxels x 200 conditions x 3 trials. 
+% The data are from an fMRI experiment measuring responses to auditory
+% sentences. The values reflect fMRI response amplitudes in percent BOLD
+% signal change units. The voxels are taken from a language-selective 
+% brain region in the left hemisphere. 
+
 %% PREPARE AND DOWNLOAD THE DATA
 
 % Start fresh
