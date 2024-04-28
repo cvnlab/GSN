@@ -10,7 +10,7 @@ def perform_gsn(data, opt=None):
 
     opt (dict, optional): A dictionary with the following optional fields:
         wantverbose (bool, optional): Whether to print status statements. Default is True.
-        wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is False.
+        wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is True.
 
     Returns:
     results: A dictionary with the results containing:
@@ -47,7 +47,7 @@ def perform_gsn(data, opt=None):
     if 'wantverbose' not in opt or opt['wantverbose'] is None:
         opt['wantverbose'] = 1
     if 'wantshrinkage' not in opt or opt['wantshrinkage'] is None:
-        opt['wantshrinkage'] = 0
+        opt['wantshrinkage'] = 1
 
     # Prepare opt for rsa_noise_ceiling.py
     opt['mode'] = 1
