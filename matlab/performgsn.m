@@ -8,7 +8,7 @@ function results = performgsn(data,opt)
 % <opt> (optional) is a struct with the following optional fields:
 %   <wantverbose> (optional) is whether to print status statements. Default: 1.
 %   <wantshrinkage> (optional) is whether to use shrinkage in the estimation
-%     of covariance. Default: 0.
+%     of covariance. Default: 1.
 %
 % Perform GSN (generative modeling of signal and noise).
 %
@@ -30,6 +30,7 @@ function results = performgsn(data,opt)
 %             rectification (to prevent non-sensical negative ncsnr values).
 %
 % History:
+% - 2024/04/28 - change default for wantshrinkage to 1.
 % - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
 %                    we now have cSb and cNb as the final estimates;
 %                (2) cSb no longer has the scaling baked in and instead we 
@@ -48,7 +49,7 @@ if ~isfield(opt,'wantverbose') || isempty(opt.wantverbose)
   opt.wantverbose = 1;
 end
 if ~isfield(opt,'wantshrinkage') || isempty(opt.wantshrinkage)
-  opt.wantshrinkage = 0;
+  opt.wantshrinkage = 1;
 end
 
 % prepare opt for rsanoiseceiling.m
