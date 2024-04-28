@@ -1,0 +1,465 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+<html>
+<head>
+<META http-equiv="Content-Type" content="text/html; charset=UTF-8">
+<!--
+This HTML was auto-generated from MATLAB code.
+To make changes, update the MATLAB code and republish this document.
+      -->
+<title>example1</title>
+<meta name="generator" content="MATLAB 23.2">
+<link rel="schema.DC" href="http://purl.org/dc/elements/1.1/">
+<meta name="DC.date" content="2024-04-28">
+<meta name="DC.source" content="example1.m">
+<style type="text/css">
+html,body,div,span,applet,object,iframe,h1,h2,h3,h4,h5,h6,p,blockquote,pre,a,abbr,acronym,address,big,cite,code,del,dfn,em,font,img,ins,kbd,q,s,samp,small,strike,strong,tt,var,b,u,i,center,dl,dt,dd,ol,ul,li,fieldset,form,label,legend,table,caption,tbody,tfoot,thead,tr,th,td{margin:0;padding:0;border:0;outline:0;font-size:100%;vertical-align:baseline;background:transparent}body{line-height:1}ol,ul{list-style:none}blockquote,q{quotes:none}blockquote:before,blockquote:after,q:before,q:after{content:'';content:none}:focus{outine:0}ins{text-decoration:none}del{text-decoration:line-through}table{border-collapse:collapse;border-spacing:0}
+
+html { min-height:100%; margin-bottom:1px; }
+html body { height:100%; margin:0px; font-family:Arial, Helvetica, sans-serif; font-size:10px; color:#000; line-height:140%; background:#fff none; overflow-y:scroll; }
+html body td { vertical-align:top; text-align:left; }
+
+h1 { padding:0px; margin:0px 0px 25px; font-family:Arial, Helvetica, sans-serif; font-size:1.5em; color:#d55000; line-height:100%; font-weight:normal; }
+h2 { padding:0px; margin:0px 0px 8px; font-family:Arial, Helvetica, sans-serif; font-size:1.2em; color:#000; font-weight:bold; line-height:140%; border-bottom:1px solid #d6d4d4; display:block; }
+h3 { padding:0px; margin:0px 0px 5px; font-family:Arial, Helvetica, sans-serif; font-size:1.1em; color:#000; font-weight:bold; line-height:140%; }
+
+a { color:#005fce; text-decoration:none; }
+a:hover { color:#005fce; text-decoration:underline; }
+a:visited { color:#004aa0; text-decoration:none; }
+
+p { padding:0px; margin:0px 0px 20px; }
+img { padding:0px; margin:0px 0px 20px; border:none; }
+p img, pre img, tt img, li img, h1 img, h2 img { margin-bottom:0px; }
+
+ul { padding:0px; margin:0px 0px 20px 23px; list-style:square; }
+ul li { padding:0px; margin:0px 0px 7px 0px; }
+ul li ul { padding:5px 0px 0px; margin:0px 0px 7px 23px; }
+ul li ol li { list-style:decimal; }
+ol { padding:0px; margin:0px 0px 20px 0px; list-style:decimal; }
+ol li { padding:0px; margin:0px 0px 7px 23px; list-style-type:decimal; }
+ol li ol { padding:5px 0px 0px; margin:0px 0px 7px 0px; }
+ol li ol li { list-style-type:lower-alpha; }
+ol li ul { padding-top:7px; }
+ol li ul li { list-style:square; }
+
+.content { font-size:1.2em; line-height:140%; padding: 20px; }
+
+pre, code { font-size:12px; }
+tt { font-size: 1.2em; }
+pre { margin:0px 0px 20px; }
+pre.codeinput { padding:10px; border:1px solid #d3d3d3; background:#f7f7f7; }
+pre.codeoutput { padding:10px 11px; margin:0px 0px 20px; color:#4c4c4c; }
+pre.error { color:red; }
+
+@media print { pre.codeinput, pre.codeoutput { word-wrap:break-word; width:100%; } }
+
+span.keyword { color:#0000FF }
+span.comment { color:#228B22 }
+span.string { color:#A020F0 }
+span.untermstring { color:#B20000 }
+span.syscmd { color:#B28C00 }
+span.typesection { color:#A0522D }
+
+.footer { width:auto; padding:10px 0px; margin:25px 0px 0px; border-top:1px dotted #878787; font-size:0.8em; line-height:140%; font-style:italic; color:#878787; text-align:left; float:none; }
+.footer p { margin:0px; }
+.footer a { color:#878787; }
+.footer a:hover { color:#878787; text-decoration:underline; }
+.footer a:visited { color:#878787; }
+
+table th { padding:7px 5px; text-align:left; vertical-align:middle; border: 1px solid #d6d4d4; font-weight:bold; }
+table td { padding:7px 5px; text-align:left; vertical-align:top; border:1px solid #d6d4d4; }
+
+
+
+
+
+  </style>
+</head>
+<body>
+<div class="content">
+<h2>Contents</h2>
+<div>
+<ul>
+<li>
+<a href="#1">Example 1: Using GSN to estimate signal and noise</a>
+</li>
+<li>
+<a href="#2">PREPARE AND DOWNLOAD THE DATA</a>
+</li>
+<li>
+<a href="#3">APPLY GSN TO THE DATA</a>
+</li>
+<li>
+<a href="#8">VISUALIZE THE RESULTS</a>
+</li>
+<li>
+<a href="#13">PERFORM PCA</a>
+</li>
+</ul>
+</div>
+<h2 id="1">Example 1: Using GSN to estimate signal and noise</h2>
+<pre class="codeinput">
+<span class="comment">% GSN is a method that estimates signal and noise distributions that</span>
+<span class="comment">% underlie neural response measurements.</span>
+<span class="comment">%</span>
+<span class="comment">% The purpose of this Example 1 is to guide the user through basic calls</span>
+<span class="comment">% to GSN, using a representative, small-scale test dataset. The goal is</span>
+<span class="comment">% to show the full process of calling GSN, inspecting noise ceiling (ncsnr)</span>
+<span class="comment">% values, visualizing signal and noise covariance matrices, and performing PCA.</span>
+<span class="comment">%</span>
+<span class="comment">% Users encountering bugs, unexpected outputs, or other issues regarding</span>
+<span class="comment">% GSN shouldn't hesitate to raise an issue on GitHub:</span>
+<span class="comment">% https://github.com/cvnlab/GSN/issues</span>
+<span class="comment">%</span>
+<span class="comment">% The example data have dimensionality 100 voxels x 200 conditions x 3 trials.</span>
+<span class="comment">% The data are from an fMRI experiment measuring responses to auditory</span>
+<span class="comment">% sentences. The values reflect fMRI response amplitudes in percent BOLD</span>
+<span class="comment">% signal change units. The voxels are taken from a language-selective</span>
+<span class="comment">% brain region in the left hemisphere.</span>
+</pre>
+<h2 id="2">PREPARE AND DOWNLOAD THE DATA</h2>
+<pre class="codeinput">
+<span class="comment">% Start fresh</span>
+clear
+clc
+close <span class="string">all</span>
+
+this_dir    = fileparts(which(<span class="string">'example1.m'</span>));
+
+<span class="comment">% Add path to GSN</span>
+run(fullfile(this_dir, <span class="string">'..'</span>, <span class="string">'..'</span>, <span class="string">'setup.m'</span>));
+
+<span class="comment">% Download files to data directory</span>
+input_dir = fullfile(this_dir, <span class="string">'data'</span>);
+<span class="keyword">if</span> ~exist(input_dir, <span class="string">'dir'</span>)
+    mkdir(<span class="string">'data'</span>)
+<span class="keyword">end</span>
+
+input_file = fullfile(input_dir, <span class="string">'exampledata.mat'</span>);
+URL = <span class="string">'https://osf.io/download/97r6d/'</span>;
+
+download_data(URL, input_file);
+</pre>
+<h2 id="3">APPLY GSN TO THE DATA</h2>
+<pre class="codeinput">
+<span class="comment">% Load data</span>
+a1 = load(input_file)
+</pre>
+<pre class="codeoutput">
+a1 = 
+
+  struct with fields:
+
+    data: [100x200x3 double]
+
+</pre>
+<pre class="codeinput">
+<span class="comment">% a1.data contains 100 voxels x 200 conditions x 3 trials.</span>
+<span class="comment">% The values are fMRI response amplitudes in percent signal change units.</span>
+
+<span class="comment">% Perform GSN.</span>
+<span class="comment">% We explicitly set the wantshrinkage flag to 1 (true).</span>
+results = performgsn(a1.data,struct(<span class="string">'wantshrinkage'</span>,1))
+</pre>
+<pre class="codeoutput">Estimating noise covariance...done.
+Estimating data covariance...done.
+Estimating signal covariance...done.
+Performing biconvex optimization...done.
+Performing Monte Carlo simulations...done.
+
+results = 
+
+  struct with fields:
+
+             mnN: [0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 ... ] (1x100 double)
+              cN: [100x100 double]
+             cNb: [100x100 double]
+    shrinklevelN: 0.94
+    shrinklevelD: 0.72
+             mnS: [1.36383054492374 0.744548512815187 ... ] (1x100 double)
+              cS: [100x100 double]
+             cSb: [100x100 double]
+           ncsnr: [0.410226666174017 0.272800960072921 ... ] (1x100 double)
+
+</pre>
+<pre class="codeinput">
+<span class="comment">% We have several outputs in results:</span>
+<span class="comment">% mnN is the mean of the noise distribution</span>
+<span class="comment">% cN is the raw estimate of the covariance of the noise distribution</span>
+<span class="comment">% cNb is the final estimate of the covariance of the noise distribution</span>
+<span class="comment">% mnS is the mean of the signal distribution</span>
+<span class="comment">% cS is the raw estimate of the covariance of the signal distribution</span>
+<span class="comment">% cSb is the final estimate of the covariance of the signal distribution</span>
+<span class="comment">% shrinklevelN is the shrinkage fraction used when estimating the noise distribution</span>
+<span class="comment">% shrinklevelD is the shrinkage fraction used when estimating the data distribution</span>
+<span class="comment">% ncsnr is the noise ceiling snr for each voxel (signal sd divided by noise sd)</span>
+
+<span class="comment">% Notice that the noise covariance estimate involved some shrinkage:</span>
+results.shrinklevelN
+</pre>
+<pre class="codeoutput">
+ans =
+
+                      0.94
+
+</pre>
+<pre class="codeinput">
+<span class="comment">% Notice that the data covariance estimate involved some shrinkage:</span>
+results.shrinklevelD
+</pre>
+<pre class="codeoutput">
+ans =
+
+                      0.72
+
+</pre>
+<h2 id="8">VISUALIZE THE RESULTS</h2>
+<pre class="codeinput">
+<span class="comment">% Let's take a look at ncsnr</span>
+figure;
+hist(results.ncsnr);
+xlabel(<span class="string">'Noise ceiling SNR'</span>);
+ylabel(<span class="string">'Frequency'</span>);
+</pre>
+<img vspace="5" hspace="5" src="example1_01.png" alt=""> <pre class="codeinput">
+<span class="comment">% Things look good as there are plenty of voxels with positive ncsnr.</span>
+<span class="comment">% Some ncsnr values are 0. This indicates that these voxels apparently</span>
+<span class="comment">% do not seem to have any signal.</span>
+
+<span class="comment">% Let's visualize the covariance estimates</span>
+rng = [-.5 .5];
+figure;
+  <span class="comment">% this is the noise covariance estimate</span>
+subplot(2,2,1); imagesc(results.cN,rng); axis <span class="string">image</span> <span class="string">tight</span>; colormap(parula); title(<span class="string">'cN'</span>);
+  <span class="comment">% this is the final noise covariance estimate</span>
+subplot(2,2,2); imagesc(results.cNb,rng); axis <span class="string">image</span> <span class="string">tight</span>; colormap(parula); title(<span class="string">'cNb'</span>);
+  <span class="comment">% this is the signal covariance estimate</span>
+subplot(2,2,3); imagesc(results.cS,rng); axis <span class="string">image</span> <span class="string">tight</span>; colormap(parula); title(<span class="string">'cS'</span>);
+  <span class="comment">% this is the final signal covariance estimate</span>
+subplot(2,2,4); imagesc(results.cSb,rng); axis <span class="string">image</span> <span class="string">tight</span>; colormap(parula); title(<span class="string">'cSb'</span>);
+</pre>
+<img vspace="5" hspace="5" src="example1_02.png" alt=""> <pre class="codeinput">
+<span class="comment">% Notice that the diagonals of the noise covariance are stronger than the diagonals</span>
+<span class="comment">% of the signal covariance. This means the noise is larger in magnitude than the</span>
+<span class="comment">% signal. This is consistent with our earlier look at ncsnr.</span>
+<span class="comment">%</span>
+<span class="comment">% Also, notice final covariance estimates (cNb and cSb) look similar to</span>
+<span class="comment">% the raw covariance estimates (cN and cS).</span>
+
+<span class="comment">% However, there are some differences:</span>
+corr(results.cN(:),results.cNb(:))
+</pre>
+<pre class="codeoutput">
+ans =
+
+         0.999951214797784
+
+</pre>
+<pre class="codeinput">corr(results.cS(:),results.cSb(:))
+</pre>
+<pre class="codeoutput">
+ans =
+
+         0.954989098989961
+
+</pre>
+<h2 id="13">PERFORM PCA</h2>
+<pre class="codeinput">
+<span class="comment">% Define a function to compute effective dimensionality</span>
+edfun = @(x) sum(x)^2/sum(x.^2);
+
+<span class="comment">% For the estimated signal covariance and the estimated noise covariance,</span>
+<span class="comment">% convert to correlation units and then compute eigenspectra and eigenvectors.</span>
+[uS,sS,vS] = svd(convertcovariancetocorrelation(results.cSb),0);
+[uN,sN,vN] = svd(convertcovariancetocorrelation(results.cNb),0);
+
+<span class="comment">% Note that svd can be performed on the original covariance (as opposed to</span>
+<span class="comment">% the correlation version). The results will be different, and reflect a</span>
+<span class="comment">% different interpretation. By converting to correlation, we are giving</span>
+<span class="comment">% each voxel equal influence in the signal correlation matrix and in the</span>
+<span class="comment">% noise correlation matrix, even though there may be variations in the</span>
+<span class="comment">% signal and noise variances associated with different voxels in the</span>
+<span class="comment">% original (non-normalized) data.</span>
+
+<span class="comment">% Visualize the eigenspectra</span>
+figure;
+subplot(1,2,1); hold <span class="string">on</span>;
+h = [];
+h(1) = plot(diag(sS),<span class="string">'r-'</span>);
+h(2) = plot(diag(sN),<span class="string">'k-'</span>);
+title(sprintf(<span class="string">'Signal ED = %.1f, Noise ED = %.1f'</span>,edfun(diag(sS)),edfun(diag(sN))));
+legend(h,{<span class="string">'Signal'</span> <span class="string">'Noise'</span>});
+xlabel(<span class="string">'Dimension'</span>);
+ylabel(<span class="string">'Eigenvalue'</span>);
+subplot(1,2,2); hold <span class="string">on</span>;
+plot(cumsum(diag(sS))/sum(diag(sS))*100,<span class="string">'r-'</span>);
+plot(cumsum(diag(sN))/sum(diag(sN))*100,<span class="string">'k-'</span>);
+xlabel(<span class="string">'Dimension'</span>);
+ylabel(<span class="string">'Cumulative variance explained (%)'</span>);
+</pre>
+<img vspace="5" hspace="5" src="example1_03.png" alt=""> <pre class="codeinput">
+<span class="comment">% Notice that the noise has higher dimensionality than the signal.</span>
+</pre>
+<p class="footer">
+<br>
+<a href="https://www.mathworks.com/products/matlab/">Published with MATLAB&reg; R2023b</a>
+<br>
+</p>
+</div>
+<!--
+##### SOURCE BEGIN #####
+%% Example 1: Using GSN to estimate signal and noise
+
+% GSN is a method that estimates signal and noise distributions that
+% underlie neural response measurements.
+% 
+% The purpose of this Example 1 is to guide the user through basic calls 
+% to GSN, using a representative, small-scale test dataset. The goal is 
+% to show the full process of calling GSN, inspecting noise ceiling (ncsnr) 
+% values, visualizing signal and noise covariance matrices, and performing PCA.
+%
+% Users encountering bugs, unexpected outputs, or other issues regarding 
+% GSN shouldn't hesitate to raise an issue on GitHub:
+% https://github.com/cvnlab/GSN/issues
+% 
+% The example data have dimensionality 100 voxels x 200 conditions x 3 trials. 
+% The data are from an fMRI experiment measuring responses to auditory
+% sentences. The values reflect fMRI response amplitudes in percent BOLD
+% signal change units. The voxels are taken from a language-selective 
+% brain region in the left hemisphere. 
+
+%% PREPARE AND DOWNLOAD THE DATA
+
+% Start fresh
+clear
+clc
+close all
+
+this_dir    = fileparts(which('example1.m'));
+
+% Add path to GSN
+run(fullfile(this_dir, '..', '..', 'setup.m'));
+
+% Download files to data directory
+input_dir = fullfile(this_dir, 'data');
+if ~exist(input_dir, 'dir')
+    mkdir('data')
+end
+
+input_file = fullfile(input_dir, 'exampledata.mat');
+URL = 'https://osf.io/download/97r6d/';
+
+download_data(URL, input_file);
+
+%% APPLY GSN TO THE DATA
+
+% Load data
+a1 = load(input_file)
+%%
+
+% a1.data contains 100 voxels x 200 conditions x 3 trials.
+% The values are fMRI response amplitudes in percent signal change units.
+
+% Perform GSN.
+% We explicitly set the wantshrinkage flag to 1 (true).
+results = performgsn(a1.data,struct('wantshrinkage',1))
+%%
+
+% We have several outputs in results:
+% mnN is the mean of the noise distribution
+% cN is the raw estimate of the covariance of the noise distribution 
+% cNb is the final estimate of the covariance of the noise distribution
+% mnS is the mean of the signal distribution
+% cS is the raw estimate of the covariance of the signal distribution 
+% cSb is the final estimate of the covariance of the signal distribution
+% shrinklevelN is the shrinkage fraction used when estimating the noise distribution
+% shrinklevelD is the shrinkage fraction used when estimating the data distribution
+% ncsnr is the noise ceiling snr for each voxel (signal sd divided by noise sd)
+
+% Notice that the noise covariance estimate involved some shrinkage:
+results.shrinklevelN
+%%
+
+% Notice that the data covariance estimate involved some shrinkage:
+results.shrinklevelD
+%%
+
+%% VISUALIZE THE RESULTS
+
+% Let's take a look at ncsnr
+figure;
+hist(results.ncsnr);
+xlabel('Noise ceiling SNR');
+ylabel('Frequency');
+%%
+
+% Things look good as there are plenty of voxels with positive ncsnr.
+% Some ncsnr values are 0. This indicates that these voxels apparently
+% do not seem to have any signal.
+
+% Let's visualize the covariance estimates
+rng = [-.5 .5];
+figure; 
+  % this is the noise covariance estimate
+subplot(2,2,1); imagesc(results.cN,rng); axis image tight; colormap(parula); title('cN');
+  % this is the final noise covariance estimate
+subplot(2,2,2); imagesc(results.cNb,rng); axis image tight; colormap(parula); title('cNb');
+  % this is the signal covariance estimate
+subplot(2,2,3); imagesc(results.cS,rng); axis image tight; colormap(parula); title('cS');
+  % this is the final signal covariance estimate
+subplot(2,2,4); imagesc(results.cSb,rng); axis image tight; colormap(parula); title('cSb');
+%%
+
+% Notice that the diagonals of the noise covariance are stronger than the diagonals 
+% of the signal covariance. This means the noise is larger in magnitude than the
+% signal. This is consistent with our earlier look at ncsnr.
+%
+% Also, notice final covariance estimates (cNb and cSb) look similar to 
+% the raw covariance estimates (cN and cS).
+
+% However, there are some differences:
+corr(results.cN(:),results.cNb(:))
+%%
+corr(results.cS(:),results.cSb(:))
+%%
+
+%% PERFORM PCA
+ 
+% Define a function to compute effective dimensionality
+edfun = @(x) sum(x)^2/sum(x.^2);
+
+% For the estimated signal covariance and the estimated noise covariance,
+% convert to correlation units and then compute eigenspectra and eigenvectors.
+[uS,sS,vS] = svd(convertcovariancetocorrelation(results.cSb),0);
+[uN,sN,vN] = svd(convertcovariancetocorrelation(results.cNb),0);
+
+% Note that svd can be performed on the original covariance (as opposed to
+% the correlation version). The results will be different, and reflect a 
+% different interpretation. By converting to correlation, we are giving
+% each voxel equal influence in the signal correlation matrix and in the 
+% noise correlation matrix, even though there may be variations in the 
+% signal and noise variances associated with different voxels in the 
+% original (non-normalized) data.
+
+% Visualize the eigenspectra
+figure;
+subplot(1,2,1); hold on;
+h = [];
+h(1) = plot(diag(sS),'r-');
+h(2) = plot(diag(sN),'k-');
+title(sprintf('Signal ED = %.1f, Noise ED = %.1f',edfun(diag(sS)),edfun(diag(sN))));
+legend(h,{'Signal' 'Noise'});
+xlabel('Dimension');
+ylabel('Eigenvalue');
+subplot(1,2,2); hold on;
+plot(cumsum(diag(sS))/sum(diag(sS))*100,'r-');
+plot(cumsum(diag(sN))/sum(diag(sN))*100,'k-');
+xlabel('Dimension');
+ylabel('Cumulative variance explained (%)');
+%%
+
+% Notice that the noise has higher dimensionality than the signal.
+
+##### SOURCE END #####
+-->
+</body>
+</html>
