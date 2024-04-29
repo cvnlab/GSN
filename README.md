@@ -68,6 +68,8 @@ If you use GSN in your research, please cite the following paper:
 
 ## Change history
 
+* 2024/04/28 - Version 1.0 of GSN released. Accompanies the bioRxiv preprint.
+
 [pre-release updates; early-stage testing]
 * 2024/02/25 - Completed port of matlab algorithmic changes to python. 
 * 2024/01/05 - Major overhaul of GSN matlab functionality by incorporating the biconvex optimization procedure, other minor tweaks.
