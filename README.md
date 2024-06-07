@@ -35,10 +35,12 @@ pip install git+https://github.com/cvnlab/GSN.git
 Running the example scripts requires:
 
 - installing jupyter notebook or jupyter lab
+- installing matplotlib
 - cloning the GSN repository in order to get the example scripts located in `examples`:
 
 ```bash
 pip install jupyterlab
+pip install "matplotlib<3.9.0"
 git clone https://github.com/cvnlab/GSN.git
 ```
 
