@@ -36,13 +36,13 @@ def convert_covariance_to_correlation(m):
     
     # divide elements row-wise and column-wise by their
     # associated diagonal elements
-    mdiag = np.diag(m);
-    t0 = np.sqrt(posrect(mdiag));  # column vector. note: negative are set to 0!
-    m = m / np.matmul(t0,t0.T)
+    mdiag = np.diag(m)
+    t0 = np.sqrt(posrect(mdiag))  # column vector. note: negative are set to 0!
+    m = m / np.outer(t0, t0.T)
 
     # mark cases with invalid diagonal variances (<= 0) as NaN!
     bad = mdiag <= 0
-    m[bad,:] = np.nan
-    m[:,bad] = np.nan
+    m[bad, :] = np.nan
+    m[:, bad] = np.nan
 
     return m, bad
