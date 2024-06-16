@@ -30,7 +30,9 @@ if not os.path.exists(OUTPUTDIR):
 save = True
 
 flip_sign = True # Load the sign-flipped stimulus projections
-parc = 4
+unit_norm_projs = True # If True, normalize the stimulus projections to have unit norm per subject
+filter_out_low_ncsnr = None # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
+parc = 3
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
 elif parc in [4, 5]:
@@ -40,6 +42,9 @@ uids = ['cvn7009', 'cvn7012', 'cvn7002', 'cvn7011', 'cvn7007', 'cvn7006', 'cvn70
 # For all combinations of 7 train subjects, 1 test subject
 train_uid_combs = list(itertools.combinations(uids, 7))
 
+scores_train_over_uids = []
+scores_test_over_uids = []
+nc_over_uids = []
 for train_uids in train_uid_combs:
     test_uid = list(set(uids) - set(train_uids))
     print(f'Train: {train_uids}, Test: {test_uid}')
@@ -50,6 +55,8 @@ for train_uids in train_uid_combs:
         fname = f'{train_uid}_lh_{parc}_proj_20_flip-{flip_sign}.pkl'
         projfn = os.path.join(PROJOUTPUTDIR, fname)
         proj = pickle.load(open(projfn, 'rb'))
+        if unit_norm_projs: # Normalize the stimulus projections to have unit norm
+            proj = proj / np.linalg.norm(proj) # now this chunk of 200x20 is unit norm
         train_projs.append(proj)
 
     # Get a matrix of all train projections (200 x 140). Stack them
@@ -60,12 +67,12 @@ for train_uids in train_uid_combs:
     U, S, VT = np.linalg.svd(train_projs, full_matrices=False)
     V = VT.T # python returns the transpose
 
-    # scatter of S
-    plt.figure()
-    plt.scatter(range(1, len(S) + 1), S)
-    plt.xlabel('PC')
-    plt.ylabel('Singular Value')
-    plt.show()
+    # # scatter of S
+    # plt.figure()
+    # plt.scatter(range(1, len(S) + 1), S)
+    # plt.xlabel('PC')
+    # plt.ylabel('Singular Value')
+    # plt.show()
 
     # For the test subject, load their voxel data
     assert len(test_uid) == 1
@@ -90,6 +97,31 @@ for train_uids in train_uid_combs:
     mnS_reshaped = results_test['mnS'].reshape(-1, 1, 1)  # reshaping to (vertices, 1, 1)
     data_test_subtracted = data_test - mnS_reshaped
 
+    ncsnr = results_test['ncsnr']
+    # Filter out voxels with low ncsnr
+    if filter_out_low_ncsnr is not None:
+        data_test_subtracted2 = data_test_subtracted[ncsnr > filter_out_low_ncsnr, :, :]
+        print(f'Filtering out {data_test_subtracted.shape[1] - data_test_subtracted2.shape[1]} voxels with ncsnr < {filter_out_low_ncsnr}')
+        ncsnr2 = ncsnr[ncsnr > filter_out_low_ncsnr]
+
+        # Visualize the ncsnr of the voxels, pre and post filtering
+        # plt.figure()
+        # plt.hist(ncsnr, bins=50, alpha=0.5, label='Pre-Filtering')
+        # plt.hist(ncsnr2, bins=50, alpha=0.5, label='Post-Filtering')
+        # plt.xlabel('Noise Ceiling SNR')
+        # plt.ylabel('Frequency')
+        # plt.legend()
+        # plt.show()
+
+        data_test_subtracted = data_test_subtracted2
+        ncsnr = ncsnr2
+
+    # Compute the nc based of off ncsnr: nc = ncsnr^2 / (ncsnr^2 + 1/n) * 100 where n is the number of trials in the test, i.e., 2
+    n = 2
+    nc = (ncsnr ** 2) / (ncsnr ** 2 + 1/n) * 100 # This gets the nc of each voxel (post filtering)
+    nc_mean_over_voxs = np.mean(nc)
+    nc_over_uids.append(nc_mean_over_voxs)
+
     # # Separate the data_test_subtracted into test_train_trials (trials 1 and 2) and test_test_trials (trial 3)
     # test_uid_train_trials = data_test_subtracted[:, :, :2]
     # test_uid_train_trials = np.mean(test_uid_train_trials, axis=2)     # Average over the two trials
@@ -99,42 +131,92 @@ for train_uids in train_uid_combs:
     train_trials = [0, 1, 2]
     test_trials = [[1, 2], [0, 2], [0, 1]]
 
+    scores_train_over_trial_combos = []
+    scores_test_over_trial_combos = []
     for train_trial, test_trial in zip(train_trials, test_trials):
         test_uid_train_trials = data_test_subtracted[:, :, train_trial]
         test_uid_test_trials = data_test_subtracted[:, :, test_trial]
-
-        # Average over the two trials
-        # test_uid_train_trials = np.mean(test_uid_train_trials, axis=2)     # Average over the two trials
-        # test_uid_test_trials = np.mean(test_uid_test_trials, axis=2)     # Average over the two trials
+        # Average over the two test trials
+        test_uid_test_trials = np.mean(test_uid_test_trials, axis=2)
 
         # Run linear regression on the train trials
 
-    scores_train = []
-    scores_test = []
-    for j in range(0, 20):
-        # Take out the jth PC from U
-        U_j = U[:, :j+1] # design matrix is 200 by j
+        scores_train = []
+        scores_test = []
+        for j in range(0, 20):
+            # Take out the jth PC from U
+            U_j = U[:, :j+1] # design matrix is 200 by j
 
-        reg = LinearRegression(fit_intercept=False).fit(U_j, test_uid_train_trials.T)
+            reg = LinearRegression(fit_intercept=False).fit(U_j, test_uid_train_trials.T)
+            # recons = U_j @ reg.coef_.T
 
-        score_test = reg.score(U_j, test_uid_test_trials.T)
-        scores_test.append(score_test)
+            score_test = reg.score(U_j, test_uid_test_trials.T) * 100
+            scores_test.append(score_test)
 
-        score_train = reg.score(U_j, test_uid_train_trials.T)
-        scores_train.append(score_train)
+            score_train = reg.score(U_j, test_uid_train_trials.T) * 100
+            scores_train.append(score_train)
 
-        print(f'PCs: {j+1}, Score: {score_test}')
+            print(f'PCs: {j+1}, Score: {score_test}')
 
-        # recons = U_j @ reg.coef_.T
+        scores_train_over_trial_combos.append(scores_train)
+        scores_test_over_trial_combos.append(scores_test)
 
     plt.figure()
-    plt.plot(range(1, 21), scores_test, label='Test')
-    plt.plot(range(1, 21), scores_train, label='Train')
+    for i, (scores_train, scores_test) in enumerate(zip(scores_train_over_trial_combos, scores_test_over_trial_combos)):
+        plt.plot(range(1, 21), scores_train, label=f'Train Trial {train_trials[i]}')
+        plt.plot(range(1, 21), scores_test, label=f'Test Trial {test_trials[i]}')
+    # Add a horizontal line for the noise ceiling
+    plt.axhline(y=nc_mean_over_voxs, color='black', linestyle='--', label='NC')
     plt.xlabel('Number of PCs')
+    plt.xticks(range(1, 21))
     plt.ylabel('R^2')
-    plt.title(f'Test UID: {test_uid}')
+    plt.title(f'Parc {parc}, test UID {test_uid}, filter: {filter_out_low_ncsnr}, norm: {unit_norm_projs}')
     plt.legend()
+    plt.tight_layout()
+    if save:
+        plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{test_uid}_lh_{parc}_flip-{flip_sign}_filter-{filter_out_low_ncsnr}_norm-{unit_norm_projs}.png'))
     plt.show()
+
+    # Average over the 3 trials and store across people
+    scores_train_over_uids.append(np.mean(scores_train_over_trial_combos, axis=0))
+    scores_test_over_uids.append(np.mean(scores_test_over_trial_combos, axis=0))
+
+# Plot across uids
+d_uid_color = {
+    'cvn7009': 'red',
+    'cvn7012': 'blue',
+    'cvn7002': 'green',
+    'cvn7011': 'purple',
+    'cvn7007': 'orange',
+    'cvn7006': 'brown',
+    'cvn7013': 'pink',
+    'cvn7016': 'gray'
+}
+
+plt.figure()
+for i, (scores_train, scores_test) in enumerate(zip(scores_train_over_uids, scores_test_over_uids)):
+    test_uid = list(set(uids) - set(train_uid_combs[i]))
+    plt.plot(range(1, 21), scores_train, label=f'Train UID {train_uid_combs[i]}', alpha=0.2, color=d_uid_color[test_uid[0]])
+    plt.plot(range(1, 21), scores_test, label=f'Test UID {test_uid}', alpha=0.2, color=d_uid_color[test_uid[0]], linestyle='dotted')
+    # Add a horizontal line for the noise ceiling, in each subjects color
+    plt.axhline(y=nc_over_uids[i], color=d_uid_color[test_uid[0]], linestyle='--', label='NC')
+
+plt.plot(range(1, 21), np.mean(scores_train_over_uids, axis=0), label='Train Grand Mean', color='black')
+plt.plot(range(1, 21), np.mean(scores_test_over_uids, axis=0), label='Test Grand Mean', color='black', linestyle='dotted')
+plt.axhline(y=np.mean(nc_over_uids), color='black', linestyle='--', label='NC Grand Mean')
+plt.xlabel('Number of PCs')
+plt.xticks(range(1, 21))
+plt.ylabel('R^2')
+plt.title(f'Parc {parc}, filter: {filter_out_low_ncsnr}, norm: {unit_norm_projs}')
+# plt.legend()
+if save:
+    plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_across_uids_lh_{parc}_flip-{flip_sign}_filter-{filter_out_low_ncsnr}_norm-{unit_norm_projs}.png'))
+plt.show()
+
+
+
+
+
 
 
 print('Done!')
