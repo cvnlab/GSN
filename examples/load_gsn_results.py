@@ -62,8 +62,9 @@ save = True
 
 make_plots = False
 compute_pcs = True # compute SVD and project onto the stimulus data
+flip_sign = True # If the mean of a column of V is negative, flip the sign of that column
 permute = False
-parc = 3
+parc = 5
 if permute:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*permute-{permute}*.pkl')
 else:
@@ -102,10 +103,27 @@ for f in files:
 
         # Project data onto the PCs
         n_pcs = 20
-        proj = np.dot(D.T, vT_Sb.T[:, :n_pcs])
+        # proj = np.dot(D.T, vT_Sb.T[:, :n_pcs]) # same as np.dot(D.T, vT_Sb.T)[:, :n_pcs]
+        V = vT_Sb.T # python returns the transpose of the V matrix. Transpose back to get the correct V
+        # Check column means of V
+        if flip_sign:
+            for i in range(V.shape[1]):
+                if np.mean(V[:, i]) < 0:
+                    V[:, i] = -V[:, i]
+
+        proj = np.dot(D.T, V[:, :n_pcs])
+
+        # Take stimset_rep{1,2,3}_ordered and assert that item_ids are 1-200
+        stimset_rep1_ordered = d['stimset_rep1_ordered']
+        stimset_rep2_ordered = d['stimset_rep2_ordered']
+        stimset_rep3_ordered = d['stimset_rep3_ordered']
+        assert np.all(stimset_rep1_ordered['item_id'] == np.arange(1, 201))
+        assert np.all(stimset_rep2_ordered['item_id'] == np.arange(1, 201))
+        assert np.all(stimset_rep3_ordered['item_id'] == np.arange(1, 201))
+        print(f'Item IDs are 1-200 for {uid}')
 
         # Save the projections in the output directory
-        projfn = os.path.join(OUTPUTDIR, f'{uid}_{hemi}_{parc}_proj_{n_pcs}.pkl')
+        projfn = os.path.join(OUTPUTDIR, f'{uid}_{hemi}_{parc}_proj_{n_pcs}_flip-{flip_sign}.pkl')
         if save:
             pickle.dump(proj, open(projfn, 'wb'))
             print(f'Saved projections to {projfn}')
