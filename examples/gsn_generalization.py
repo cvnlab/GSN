@@ -20,6 +20,40 @@ d_uid_to_sess = {'cvn7009': '20231202-ST001',
                     'cvn7013': '20240508-ST001',
                     'cvn7016': '20240530-ST001',}
 
+def fit_and_evaluate(U_j, train_trials, test_trials):
+    """
+    Fits a linear regression model without an intercept to the training data using the normal equation,
+    reconstructs the training data using the learned coefficients, and evaluates the model on test data
+    by computing the R^2 score.
+
+    Parameters:
+        U_j (ndarray): The feature matrix (independent variables) used for fitting the model.
+        train_trials (ndarray): The target values for training (dependent variables).
+        test_trials (ndarray): The target values for testing.
+
+    Returns:
+        score_test (float): The R^2 score of the model on the test data, multiplied by 100.
+    """
+    # Reshape train_trials if necessary (assuming train_trials is a vector)
+    if train_trials.ndim == 1:
+        train_trials = train_trials.reshape(-1, 1)
+    if test_trials.ndim == 1:
+        test_trials = test_trials.reshape(-1, 1)
+
+    # Fit the model using the normal equation
+    # U_j.T * U_j * coef_ = U_j.T * train_trials
+    coef_ = np.linalg.solve(U_j.T @ U_j, U_j.T @ train_trials)
+
+    # Reconstruct the training data using the learned coefficients
+    recons = U_j @ coef_
+
+    # Calculate the R^2 score for the test data
+    total_variance = np.sum((test_trials - np.mean(test_trials))**2)
+    residual_variance = np.sum((test_trials - recons)**2)
+    score_test = (1 - residual_variance / total_variance) * 100
+
+    return score_test
+
 SUBJECTDIR = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/FMRI_FSAVERAGE/'
 GSNOUTPUTS = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/GSN_outputs/'
 PROJOUTPUTDIR = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/GSN_outputs/outputs/'
@@ -31,7 +65,7 @@ save = True
 
 flip_sign = True # Load the sign-flipped stimulus projections
 unit_norm_projs = True # If True, normalize the stimulus projections to have unit norm per subject
-filter_out_low_ncsnr = None # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
+filter_out_low_ncsnr = 0.4 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
 parc = 3
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
@@ -101,7 +135,7 @@ for train_uids in train_uid_combs:
     # Filter out voxels with low ncsnr
     if filter_out_low_ncsnr is not None:
         data_test_subtracted2 = data_test_subtracted[ncsnr > filter_out_low_ncsnr, :, :]
-        print(f'Filtering out {data_test_subtracted.shape[1] - data_test_subtracted2.shape[1]} voxels with ncsnr < {filter_out_low_ncsnr}')
+        print(f'Filtering out {data_test_subtracted.shape[0] - data_test_subtracted2.shape[0]} voxels with ncsnr < {filter_out_low_ncsnr}')
         ncsnr2 = ncsnr[ncsnr > filter_out_low_ncsnr]
 
         # Visualize the ncsnr of the voxels, pre and post filtering
@@ -141,22 +175,45 @@ for train_uids in train_uid_combs:
 
         # Run linear regression on the train trials
 
+        # 1 trial data, do SVD. Get the U matrix. Iterate over the number of PCs.
+
+
         scores_train = []
         scores_test = []
         for j in range(0, 20):
             # Take out the jth PC from U
             U_j = U[:, :j+1] # design matrix is 200 by j
 
-            reg = LinearRegression(fit_intercept=False).fit(U_j, test_uid_train_trials.T)
+            # reg = LinearRegression(fit_intercept=False).fit(U_j, test_uid_train_trials.T)
             # recons = U_j @ reg.coef_.T
 
-            score_test = reg.score(U_j, test_uid_test_trials.T) * 100
-            scores_test.append(score_test)
+            # score_test = reg.score(U_j, test_uid_test_trials.T) * 100
+            # scores_test.append(score_test)
+            #
+            # score_train = reg.score(U_j, test_uid_train_trials.T) * 100
+            # scores_train.append(score_train)
+            #
+            # print(f'PCs: {j+1}, Score: {score_test}')
+            #
+            # scores_train_over_trial_combos.append(scores_train)
+            # scores_test_over_trial_combos.append(scores_test)
 
-            score_train = reg.score(U_j, test_uid_train_trials.T) * 100
-            scores_train.append(score_train)
+            # Instead of running regression on all voxels, run on each voxel separately
+            scores_train_vox = []
+            scores_test_vox = []
+            for i in range(test_uid_train_trials.shape[0]):
+                reg = LinearRegression(fit_intercept=False).fit(U_j, test_uid_train_trials[i, :])
+                score_test = reg.score(U_j, test_uid_test_trials[i, :]) * 100
+                scores_test_vox.append(score_test)
+                score_train = reg.score(U_j, test_uid_train_trials[i, :]) * 100
+                scores_train_vox.append(score_train)
 
-            print(f'PCs: {j+1}, Score: {score_test}')
+                # Use the function: fit_and_evaluate
+                score_test2 = fit_and_evaluate(U_j, test_uid_train_trials[i, :], test_uid_test_trials[i, :])
+                assert np.isclose(score_test, score_test2)
+
+            scores_train.append(np.mean(scores_train_vox))
+            scores_test.append(np.mean(scores_test_vox))
 
         scores_train_over_trial_combos.append(scores_train)
         scores_test_over_trial_combos.append(scores_test)
