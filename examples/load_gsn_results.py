@@ -58,13 +58,13 @@ OUTPUTDIR = os.path.join(GSNOUTPUTS, 'outputs')
 if not os.path.exists(OUTPUTDIR):
     os.makedirs(OUTPUTDIR)
 
-save = True
+save = False
 
 make_plots = False
 compute_pcs = True # compute SVD and project onto the stimulus data
 flip_sign = True # If the mean of a column of V is negative, flip the sign of that column
 permute = False
-parc = 5
+parc = 1
 if permute:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*permute-{permute}*.pkl')
 else:
@@ -105,6 +105,18 @@ for f in files:
         n_pcs = 20
         # proj = np.dot(D.T, vT_Sb.T[:, :n_pcs]) # same as np.dot(D.T, vT_Sb.T)[:, :n_pcs]
         V = vT_Sb.T # python returns the transpose of the V matrix. Transpose back to get the correct V
+        # cols of V are voxel PCs. unit length, new basis
+
+        # visualize the two matrices, different subplots, same color limits
+        # fig, ax = plt.subplots(1, 2, figsize=(20, 10))
+        # ax[0].imshow(U_Sb, aspect='auto', interpolation='none', cmap='bwr', vmin=-0.1, vmax=0.1)
+        # ax[0].set_title('U_Sb')
+        # ax[1].imshow(V, aspect='auto', interpolation='none', cmap='bwr', vmin=-0.1, vmax=0.1)
+        # ax[1].set_title('V')
+        # plt.suptitle(f'uid: {uid}, hemi: {hemi}, parc: {parc}')
+        # plt.show()
+
+
         # Check column means of V
         if flip_sign:
             for i in range(V.shape[1]):
@@ -112,6 +124,9 @@ for f in files:
                     V[:, i] = -V[:, i]
 
         proj = np.dot(D.T, V[:, :n_pcs])
+
+        # proj_rank1 = np.dot(D.T, V[:, 0])
+
 
         # Take stimset_rep{1,2,3}_ordered and assert that item_ids are 1-200
         stimset_rep1_ordered = d['stimset_rep1_ordered']
