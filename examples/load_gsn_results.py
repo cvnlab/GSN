@@ -64,7 +64,7 @@ make_plots = False
 compute_pcs = True # compute SVD and project onto the stimulus data
 flip_sign = True # If the mean of a column of V is negative, flip the sign of that column
 permute = False
-parc = 4
+parc = 5
 use_repwise_gsn = True # GSN was computed on just two reps, so we need to iterate over the reps
 if permute:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*permute-{permute}*.pkl')

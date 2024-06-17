@@ -60,12 +60,12 @@ OUTPUTDIR = os.path.join(GSNOUTPUTS, 'gsn_generalization')
 if not os.path.exists(OUTPUTDIR):
     os.makedirs(OUTPUTDIR)
 
-save = True
+save = False
 
 use_repwise_gsn = True
 shuffle_reps = True
 n_trials_for_test = 1 # 2 or 1
-filter_out_low_ncsnr = 0.4 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
+filter_out_low_ncsnr = 0.45 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
 flip_sign = True
 parc = 4
 if parc in [1, 2, 3]:
@@ -154,7 +154,14 @@ for uid in uids:
             # We want to do SVD on stimuli x vertices, so we need to transpose the data
             U, S, Vt = np.linalg.svd(uid_train_trials.T, full_matrices=False)
 
+        # Just average over the voxels in the test data
+        # uid_test_trials = np.mean(uid_test_trials, axis=0)  # (stimuli) # make it (1, stimuli) for the function
+        # uid_test_trials = uid_test_trials.reshape(1, -1)
         n_vox = uid_test_trials.shape[0]
+
+        # Also average over the voxels in the train data
+        # uid_train_trials = np.mean(uid_train_trials, axis=0)  # (stimuli) # make it (1, stimuli) for the function
+        # uid_train_trials = uid_train_trials.reshape(1, -1)
 
         scores_train = []
         scores_test = []
@@ -179,16 +186,29 @@ for uid in uids:
                 scores_train_vox.append(score_train)
                 # assert np.isclose(score_test, score_test2)
 
-            scores_train.append(np.mean(scores_train_vox))
-            scores_test.append(np.mean(scores_test_vox))
+            # Append mean over voxels
+            # scores_train.append(np.mean(scores_train_vox))
+            # scores_test.append(np.mean(scores_test_vox))
+
+            # Append all voxels
+            scores_train.append(scores_train_vox)
+            scores_test.append(scores_test_vox)
 
         scores_train_over_trial_combos.append(scores_train)
         scores_test_over_trial_combos.append(scores_test)
 
+    # Flatten out the lists scores_train_over_trial_combos and scores_test_over_trial_combos
+    # There are three rep combos, and then 20 PCs
+
     plt.figure()
     for i, (scores_train, scores_test) in enumerate(zip(scores_train_over_trial_combos, scores_test_over_trial_combos)):
-        plt.plot(range(1, 21), scores_train, label=f'Train Trial {train_trials[i]}')
-        plt.plot(range(1, 21), scores_test, label=f'Test Trial {test_trials[i]}')
+        # scores_train now has 20 lists, each with n_vox elements. so we need to find the voxel within each of the 20 overall lists
+        for v in range(n_vox):
+            # plt.plot(range(1, 21), [scores_train[j][v] for j in range(20)], label=f'Train Trial {train_trials[i]}')
+            plt.plot(range(1, 21), [scores_test[j][v] for j in range(20)], label=f'Test Trial {test_trials[i]}',
+                     linewidth=0.5, alpha=0.3)
+        # plt.plot(range(1, 21), scores_train, label=f'Train Trial {train_trials[i]}')
+        # plt.plot(range(1, 21), scores_test, label=f'Test Trial {test_trials[i]}')
     # Add a horizontal line for the noise ceiling
     plt.axhline(y=nc_mean_over_voxs, color='black', linestyle='--', label='NC')
     plt.xlabel('Number of PCs')
@@ -197,7 +217,7 @@ for uid in uids:
     plt.title(f'Parc {parc}, test UID {uid}, filter: {filter_out_low_ncsnr}, '
               f'n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}, repwise: {use_repwise_gsn}',
                 fontsize=10)
-    plt.legend()
+    # plt.legend()
     plt.tight_layout()
     if save:
         plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{uid}_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}_repwise-{use_repwise_gsn}.png'))
