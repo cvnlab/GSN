@@ -62,12 +62,17 @@ if not os.path.exists(OUTPUTDIR):
 
 save = True
 
-filter_out_low_ncsnr = 0.4 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
-parc = 1
+
+shuffle_reps = False
+n_trials_for_test = 1 # 2 or 1
+filter_out_low_ncsnr = 0.5 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
+parc = 5
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
 elif parc in [4, 5]:
     parc_col = 'parc_lang'
+elif parc in [24]:
+    parc_col = 'parc_glasser'
 uids = ['cvn7009', 'cvn7012', 'cvn7002', 'cvn7011', 'cvn7007', 'cvn7006', 'cvn7013', 'cvn7016']
 
 
@@ -81,11 +86,14 @@ for uid in uids:
     sess = d_uid_to_sess[uid]
     datafn = os.path.join(SUBJECTDIR, f'{sess}-{uid}', 'GLMestimatesingletrialoutputs', 'extracted_voxs',
                           f'lh_baseline200_{sess}-{uid}_extracted-voxs-{parc_col}_parcs-{parc}.pkl')
+    if shuffle_reps:
+        datafn = datafn.replace('.pkl', '_shuffled-reps.pkl')
+
     d = pickle.load(open(datafn, 'rb'))
     data = d['betas_parc_3d'] # (vertices, stimuli, trials)
 
     # Load the GSN pickle to get the signal mean (mnS)
-    if parc in [1, 2, 3]:
+    if parc in [1, 2, 3, 24]:
         # lh_baseline200_20240508-ST001-cvn7013_extracted-voxs-external_parc_parcs-1_permute-False.pkl
         gsnfn = os.path.join(GSNOUTPUTS, f'lh_baseline200_{sess}-{uid}_extracted-voxs-{parc_col}_parcs-{parc}_permute-False.pkl')
     elif parc in [4, 5]: # lh_baseline200_20240508-ST001-cvn7013_extracted-voxs-parc_lang_parcs-5_gsn_outputs.pkl
@@ -112,8 +120,12 @@ for uid in uids:
     nc_over_uids.append(nc_mean_over_voxs)
 
     # Separate the data_test_subtracted into test_train_trials (trials 1) and test_test_trials (trial 2 and 3). Iterate over combinations of trials
-    train_trials = [0, 1, 2]
-    test_trials = [[1, 2], [0, 2], [0, 1]]
+    if n_trials_for_test == 2:
+        train_trials = [0, 1, 2]
+        test_trials = [[1, 2], [0, 2], [0, 1]]
+    elif n_trials_for_test == 1:
+        train_trials = [[0, 1], [0, 2], [1, 2]]
+        test_trials = [2, 1, 0]
 
     scores_train_over_trial_combos = []
     scores_test_over_trial_combos = []
@@ -121,7 +133,10 @@ for uid in uids:
         uid_train_trials = data_subtracted[:, :, train_trial] # (vertices, stimuli)
         uid_test_trials = data_subtracted[:, :, test_trial] # (vertices, stimuli, 2)
         # Average over the two test trials
-        uid_test_trials = np.mean(uid_test_trials, axis=2)
+        if n_trials_for_test == 2:
+            uid_test_trials = np.mean(uid_test_trials, axis=2)
+        elif n_trials_for_test == 1: # instead average over the train trials
+            uid_train_trials = np.mean(uid_train_trials, axis=2)
 
         # Run linear regression on the train trials: 1 trial data, do SVD. Get the U matrix. Iterate over the number of PCs.
         # We want to do SVD on stimuli x vertices, so we need to transpose the data
@@ -165,11 +180,11 @@ for uid in uids:
     plt.xlabel('Number of PCs')
     plt.xticks(range(1, 21))
     plt.ylabel('R^2')
-    plt.title(f'Parc {parc}, test UID {uid}, filter: {filter_out_low_ncsnr}')
+    plt.title(f'Parc {parc}, test UID {uid}, filter: {filter_out_low_ncsnr}, n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}')
     plt.legend()
     plt.tight_layout()
     if save:
-        plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{uid}_lh_{parc}_filter-{filter_out_low_ncsnr}.png'))
+        plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{uid}_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}.png'))
     plt.show()
 
     # Average over the 3 trials and store across people
@@ -201,10 +216,10 @@ plt.axhline(y=np.mean(nc_over_uids), color='black', linestyle='--', label='NC Gr
 plt.xlabel('Number of PCs')
 plt.xticks(range(1, 21))
 plt.ylabel('R^2')
-plt.title(f'Parc {parc}, filter: {filter_out_low_ncsnr}')
+plt.title(f'Parc {parc}, filter: {filter_out_low_ncsnr}, n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}')
 # plt.legend()
 if save:
-    plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_across_uids_lh_{parc}_filter-{filter_out_low_ncsnr}.png'))
+    plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_across_uids_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}.png'))
 plt.show()
 
 
