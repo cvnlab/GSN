@@ -58,13 +58,13 @@ OUTPUTDIR = os.path.join(GSNOUTPUTS, 'outputs')
 if not os.path.exists(OUTPUTDIR):
     os.makedirs(OUTPUTDIR)
 
-save = False
+save = True
 
 make_plots = False
 compute_pcs = True # compute SVD and project onto the stimulus data
 flip_sign = True # If the mean of a column of V is negative, flip the sign of that column
 permute = False
-parc = 1
+parc = 24
 if permute:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*permute-{permute}*.pkl')
 else:
@@ -73,6 +73,8 @@ else:
 
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
+elif parc in [24]:
+    parc_col = 'parc_glasser'
 elif parc in [4, 5]:
     parc_col = 'parc_lang'
 

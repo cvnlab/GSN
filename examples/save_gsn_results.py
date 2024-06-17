@@ -1,6 +1,7 @@
 import os
 from os.path import join, exists, split
 import sys
+import getpass
 
 sys.path.append(f'{os.getcwd()}/../')
 from gsn.perform_gsn import perform_gsn
@@ -13,6 +14,7 @@ import argparse
 
 make_plots = False # if False, just save GSN outputs
 save_outputs = True
+user = getpass.getuser()
 
 d_uid_to_sess = {'cvn7009': '20231202-ST001',
                     'cvn7012': '20231202-ST001',
@@ -59,21 +61,31 @@ def main(raw_args=None):
                         default='/nese/mit/group/evlab/u/gretatu/Sentence7T/')
     parser.add_argument("--uid", type=str, default='cvn7012')
     parser.add_argument("--hemi", type=str, default='lh')
-    parser.add_argument("--parc_col", type=str, default='external_parc')
-    parser.add_argument("--parc", type=int, default=4)
+    parser.add_argument("--parc_col", type=str, default='parc_glasser')
+    parser.add_argument("--parc", type=int, default=24)
+    parser.add_argument("--shuffle_reps", type=str2bool, default=True,
+                        help='Whether the repetitions were shuffled when extracting the voxels')
+    parser.add_argument("--iterate_over_rep_combos", type=str2bool, default=True,
+                        help='Whether to iterate over the different repetition in pairs of two')
     parser.add_argument("--permute", type=str2bool, default=False)
     parser.add_argument("--random_seed", type=int, default=0)
     args = parser.parse_args(raw_args)
 
     sess = d_uid_to_sess[args.uid]
 
-    savestr = f'{args.hemi}_baseline200_{sess}-{args.uid}_extracted-voxs-{args.parc_col}_parcs-{args.parc}_permute-{args.permute}'
+    savestr = f'{args.hemi}_baseline200_{sess}-{args.uid}_extracted-voxs-{args.parc_col}_parcs-{args.parc}_permute-{args.permute}_shuffle_reps-{args.shuffle_reps}'
 
-    print(f'uid: {args.uid}, sess: {sess}, hemi: {args.hemi}, parc_col: {args.parc_col}, parc: {args.parc} permute: {args.permute}')
+    print(f'uid: {args.uid}, sess: {sess}, hemi: {args.hemi}, parc_col: {args.parc_col}, parc: {args.parc} permute: {args.permute} shuffle_reps: {args.shuffle_reps}')
 
     fname = f'{args.hemi}_baseline200_{sess}-{args.uid}_extracted-voxs-{args.parc_col}_parcs-{args.parc}.pkl'
-    # datafn = join(args.SUBJECTDIR, f'{args.sess}-{args.uid}', 'GLMestimatesingletrialoutputs', 'extracted_voxs', 'extracted_voxs', fname) # quirk of scp
-    datafn = join(args.SUBJECTDIR, 'extracted_voxs', fname)
+    if args.shuffle_reps:
+        fname = fname.replace('.pkl', '_shuffled-reps.pkl')
+
+    if user == 'gt':
+        args.SUBJECTDIR = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/FMRI_FSAVERAGE/'
+        datafn = join(args.SUBJECTDIR, f'{sess}-{args.uid}', 'GLMestimatesingletrialoutputs', 'extracted_voxs', fname)
+    else:
+        datafn = join(args.SUBJECTDIR, 'extracted_voxs', fname) # on om it is just in one big subfolder
 
 
     print(f'loading data from {datafn}')
@@ -83,34 +95,52 @@ def main(raw_args=None):
 
     # Load pickle
     d = pickle.load(open(datafn, 'rb'))
-    X = d['betas_parc_3d']
+    X = d['betas_parc_3d'] # vertices, stimuli, trials
 
-    if args.permute:
-        np.random.seed(args.random_seed)
-        # X is (vertices, stimuli, trials). Keep vertices the same and permute stimuli across trials.
-        # Collapse last two dimensions and permute within that dimension
-        X = X.reshape(X.shape[0], -1)
-        # X = X[:, np.random.permutation(X.shape[1])]
-        # # Reshape back to original shape
-        # X = X.reshape(d['betas_parc_3d'].shape)
+    if args.iterate_over_rep_combos:
+        rep_combos = [(0, 1), (0, 2), (1, 2)] # extract the three pairs of repetitions
+        for rep_combo in rep_combos:
+            X_rep_combo = X[:, :, rep_combo]
+            results = perform_gsn(X_rep_combo, {'wantshrinkage': True})
+            if save_outputs:
+                # Save GSN outputs
+                if user == 'gt':
+                    # Save GSN outputs
+                    if user == 'gt':
+                        args.outputdir = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/GSN_outputs/'
+                    outputfn = join(args.outputdir, f'{savestr}_reps-{"-".join([str(r) for r in rep_combo])}.pkl')
+                    print(f'saving GSN outputs to {outputfn}')
+                    pickle.dump(results, open(outputfn, 'wb'))
 
-        # For each vertex, permute the stimuli across trials
-        for i in range(X.shape[0]):
-            X[i] = X[i, np.random.permutation(X.shape[1])]
-        X = X.reshape(d['betas_parc_3d'].shape)
+    else:
 
-        print(f'Permuting X!')
+        if args.permute:
+            np.random.seed(args.random_seed)
+            # X is (vertices, stimuli, trials). Keep vertices the same and permute stimuli across trials.
+            # Collapse last two dimensions and permute within that dimension
+            X = X.reshape(X.shape[0], -1)
+            # X = X[:, np.random.permutation(X.shape[1])]
+            # # Reshape back to original shape
+            # X = X.reshape(d['betas_parc_3d'].shape)
+
+            # For each vertex, permute the stimuli across trials
+            for i in range(X.shape[0]):
+                X[i] = X[i, np.random.permutation(X.shape[1])]
+            X = X.reshape(d['betas_parc_3d'].shape)
+
+            print(f'Permuting X!')
 
 
-    # Perform GSN.
-    results = perform_gsn(X, {'wantshrinkage': True})
+        # Perform GSN.
+        results = perform_gsn(X, {'wantshrinkage': True})
 
-    if save_outputs:
-        # Save GSN outputs
-        # args.outputdir = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/GSN_outputs/'
-        outputfn = join(args.outputdir, f'{savestr}.pkl')
-        print(f'saving GSN outputs to {outputfn}')
-        pickle.dump(results, open(outputfn, 'wb'))
+        if save_outputs:
+            # Save GSN outputs
+            if user == 'gt':
+                args.outputdir = '/Users/gt/Library/CloudStorage/GoogleDrive-gretatu@mit.edu/My Drive/Research2020/Sentence7T/GSN_outputs/'
+            outputfn = join(args.outputdir, f'{savestr}.pkl')
+            print(f'saving GSN outputs to {outputfn}')
+            pickle.dump(results, open(outputfn, 'wb'))
 
     if make_plots:
 
@@ -229,4 +259,15 @@ def main(raw_args=None):
 
 
 if __name__ == '__main__':
-    main()
+    uids = ['cvn7009', 'cvn7012', 'cvn7002', 'cvn7011', 'cvn7007', 'cvn7006', 'cvn7013', 'cvn7016']
+
+    for uid in uids:
+        # Glasser 24
+        main(['--uid', uid, '--hemi', 'lh', '--parc_col', 'parc_glasser', '--parc', '24', '--permute', 'False', '--random_seed', '0'])
+        # Parc Lang 1-5
+        for parc in range(1, 6):
+            if parc in [1, 2, 3]:
+                parc_col = 'external_parc'
+            else:
+                parc_col = 'parc_lang'
+            main(['--uid', uid, '--hemi', 'lh', '--parc_col', parc_col, '--parc', str(parc), '--permute', 'False', '--random_seed', '0'])
