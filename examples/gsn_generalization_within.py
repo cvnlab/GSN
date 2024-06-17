@@ -62,11 +62,12 @@ if not os.path.exists(OUTPUTDIR):
 
 save = True
 
-
-shuffle_reps = False
+use_repwise_gsn = True
+shuffle_reps = True
 n_trials_for_test = 1 # 2 or 1
-filter_out_low_ncsnr = 0.5 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
-parc = 5
+filter_out_low_ncsnr = 0.4 # if not None, filter out test voxels with ncsnr < filter_out_low_ncsnr
+flip_sign = True
+parc = 4
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
 elif parc in [4, 5]:
@@ -130,17 +131,30 @@ for uid in uids:
     scores_train_over_trial_combos = []
     scores_test_over_trial_combos = []
     for train_trial, test_trial in zip(train_trials, test_trials):
-        uid_train_trials = data_subtracted[:, :, train_trial] # (vertices, stimuli)
-        uid_test_trials = data_subtracted[:, :, test_trial] # (vertices, stimuli, 2)
+
+        uid_train_trials = data_subtracted[:, :, train_trial]  # (vertices, stimuli)
+        uid_test_trials = data_subtracted[:, :, test_trial]  # (vertices, stimuli, 2)
         # Average over the two test trials
         if n_trials_for_test == 2:
-            uid_test_trials = np.mean(uid_test_trials, axis=2)
-        elif n_trials_for_test == 1: # instead average over the train trials
-            uid_train_trials = np.mean(uid_train_trials, axis=2)
+            uid_test_trials = np.mean(uid_test_trials, axis=2)  # (vertices, stimuli)
+        elif n_trials_for_test == 1:  # instead average over the train trials
+            uid_train_trials = np.mean(uid_train_trials, axis=2)  # (vertices, stimuli)
 
-        # Run linear regression on the train trials: 1 trial data, do SVD. Get the U matrix. Iterate over the number of PCs.
-        # We want to do SVD on stimuli x vertices, so we need to transpose the data
-        U, S, Vt = np.linalg.svd(uid_train_trials.T, full_matrices=False)
+        if use_repwise_gsn:
+            # We want to use the projections for the train data, based on two trials (n_trials_for_test = 1)
+            assert n_trials_for_test == 1
+            # Load the subjects stimulus projections (200 x 20)
+            projfname = f'{uid}_lh_{parc}_proj_20_flip-{flip_sign}_reps-{train_trial[0]}-{train_trial[1]}.pkl'
+            projfn = os.path.join(PROJOUTPUTDIR, projfname)
+            proj = pickle.load(open(projfn, 'rb'))
+            U = proj # (200, 20)
+        else:
+            # Just use SVD on the data
+            # Run linear regression on the train trials: 1 trial data, do SVD. Get the U matrix. Iterate over the number of PCs.
+            # We want to do SVD on stimuli x vertices, so we need to transpose the data
+            U, S, Vt = np.linalg.svd(uid_train_trials.T, full_matrices=False)
+
+        n_vox = uid_test_trials.shape[0]
 
         scores_train = []
         scores_test = []
@@ -151,7 +165,7 @@ for uid in uids:
             # Instead of running regression on all voxels, run on each voxel separately
             scores_train_vox = []
             scores_test_vox = []
-            for i in range(uid_train_trials.shape[0]):
+            for i in range(n_vox):
                 # reg = LinearRegression(fit_intercept=False).fit(U_j, uid_train_trials[i, :])
                 # score_test = reg.score(U_j, uid_test_trials[i, :]) * 100
                 # # scores_test_vox.append(score_test)
@@ -180,11 +194,13 @@ for uid in uids:
     plt.xlabel('Number of PCs')
     plt.xticks(range(1, 21))
     plt.ylabel('R^2')
-    plt.title(f'Parc {parc}, test UID {uid}, filter: {filter_out_low_ncsnr}, n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}')
+    plt.title(f'Parc {parc}, test UID {uid}, filter: {filter_out_low_ncsnr}, '
+              f'n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}, repwise: {use_repwise_gsn}',
+                fontsize=10)
     plt.legend()
     plt.tight_layout()
     if save:
-        plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{uid}_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}.png'))
+        plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_{uid}_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}_repwise-{use_repwise_gsn}.png'))
     plt.show()
 
     # Average over the 3 trials and store across people
@@ -216,10 +232,11 @@ plt.axhline(y=np.mean(nc_over_uids), color='black', linestyle='--', label='NC Gr
 plt.xlabel('Number of PCs')
 plt.xticks(range(1, 21))
 plt.ylabel('R^2')
-plt.title(f'Parc {parc}, filter: {filter_out_low_ncsnr}, n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}')
+plt.title(f'Parc {parc}, filter: {filter_out_low_ncsnr}, n_trials_for_test: {n_trials_for_test}, shuffle_reps: {shuffle_reps}, repwise: {use_repwise_gsn}',
+            fontsize=10)
 # plt.legend()
 if save:
-    plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_across_uids_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}.png'))
+    plt.savefig(os.path.join(OUTPUTDIR, f'train_test_R2_across_uids_lh_{parc}_filter-{filter_out_low_ncsnr}_n_trials_for_test-{n_trials_for_test}_shuffle_reps-{shuffle_reps}_repwise-{use_repwise_gsn}.png'))
 plt.show()
 
 

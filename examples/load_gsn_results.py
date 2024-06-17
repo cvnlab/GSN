@@ -64,12 +64,18 @@ make_plots = False
 compute_pcs = True # compute SVD and project onto the stimulus data
 flip_sign = True # If the mean of a column of V is negative, flip the sign of that column
 permute = False
-parc = 24
+parc = 4
+use_repwise_gsn = True # GSN was computed on just two reps, so we need to iterate over the reps
 if permute:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*permute-{permute}*.pkl')
 else:
     files = glob.glob(f'{GSNOUTPUTS}*parcs-{parc}*.pkl')
     files = [f for f in files if not 'permute-True' in f]
+    if use_repwise_gsn:
+        files = [f for f in files if any(sub in f for sub in ['reps-0-1', 'reps-1-2', 'reps-0-2'])]
+    else:
+        files = [f for f in files if not any(sub in f for sub in ['reps-0-1', 'reps-1-2', 'reps-0-2'])]
+
 
 if parc in [1, 2, 3]:
     parc_col = 'external_parc'
@@ -95,8 +101,18 @@ for f in files:
         sess = d_uid_to_sess[uid]
         datafn = os.path.join(SUBJECTDIR, f'{sess}-{uid}', 'GLMestimatesingletrialoutputs', 'extracted_voxs',
                                 f'{hemi}_baseline200_{sess}-{uid}_extracted-voxs-{parc_col}_parcs-{parc}.pkl')
+        if use_repwise_gsn:
+            # Find the rep number from f
+            rep_str = f.split('/')[-1].split('_')[-1].split('.')[0] # 'reps-0-1'
+            reps = (int(rep_str.split('-')[-2]), int(rep_str.split('-')[-1]))
+            datafn = datafn.replace('.pkl', f'_shuffled-reps.pkl')
+
+
         d = pickle.load(open(datafn, 'rb'))
         data = d['betas_parc_3d']
+        if use_repwise_gsn:
+            data = data[:, :, reps]
+
 
         # Mean across trials (3rd dimension)
         data_mean = np.mean(data, axis=2)
@@ -141,6 +157,8 @@ for f in files:
 
         # Save the projections in the output directory
         projfn = os.path.join(OUTPUTDIR, f'{uid}_{hemi}_{parc}_proj_{n_pcs}_flip-{flip_sign}.pkl')
+        if use_repwise_gsn:
+            projfn = projfn.replace('.pkl', f'_reps-{reps[0]}-{reps[1]}.pkl')
         if save:
             pickle.dump(proj, open(projfn, 'wb'))
             print(f'Saved projections to {projfn}')
