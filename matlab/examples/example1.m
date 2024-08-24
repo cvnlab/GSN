@@ -37,7 +37,7 @@ if ~exist(input_dir, 'dir')
 end
 
 input_file = fullfile(input_dir, 'exampledata.mat');
-URL = 'https://osf.io/download/97r6d/';
+URL = 'https://osf.io/download/utfpq/';
 
 download_data(URL, input_file);
 
