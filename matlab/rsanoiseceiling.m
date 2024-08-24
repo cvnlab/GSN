@@ -104,8 +104,11 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %             distribution. Note that this is computed on the raw
 %             estimated covariances. Also, note that we apply positive 
 %             rectification (to prevent non-sensical negative ncsnr values).
+%     numiters - the number of iterations used in the biconvex optimization.
+%                0 means the first estimate was already positive semi-definite.
 %
 % History:
+% - 2024/08/24 - add results.numiters
 % - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
 %                    we now have cSb and cNb as the final estimates;
 %                (2) cSb no longer has the scaling baked in and instead we 
@@ -214,6 +217,7 @@ if opt.wantverbose, fprintf('Performing biconvex optimization...');, end
 cNb = cN;
 cSb_old = cS;
 cNb_old = cN;
+numiters = 0;  % numiters == 0 means the first estimate was already PSD
 
 while 1
 
@@ -237,8 +241,9 @@ while 1
   if cScheck > 0.999 && cNcheck > 0.999
     break;
   end
-
+  
   % update
+  numiters = numiters + 1;
   cSb_old = cSb;
   cNb_old = cNb;
   
@@ -450,7 +455,7 @@ nc = median(ncdist);
 
 % prepare additional outputs
 clear results;
-varstosave = {'mnN' 'cN' 'cNb' 'shrinklevelN' 'shrinklevelD' 'mnS' 'cS' 'cSb' 'sc' 'splitr' 'ncsnr'};
+varstosave = {'mnN' 'cN' 'cNb' 'shrinklevelN' 'shrinklevelD' 'mnS' 'cS' 'cSb' 'sc' 'splitr' 'ncsnr' 'numiters'};
 for p=1:length(varstosave)
   results.(varstosave{p}) = eval(varstosave{p});
 end
