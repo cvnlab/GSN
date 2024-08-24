@@ -15,7 +15,7 @@
 % The example data have dimensionality 100 voxels x 200 conditions x 3 trials. 
 % The data are from an fMRI experiment measuring responses to auditory
 % sentences. The values reflect fMRI response amplitudes in percent BOLD
-% signal change units. The voxels are taken from a language-selective 
+% signal change units. The voxels are taken from a 
 % brain region in the left hemisphere. 
 
 %% PREPARE AND DOWNLOAD THE DATA

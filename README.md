@@ -8,7 +8,7 @@ GSN is a toolbox for accurately modeling signal and noise distributions in neura
 
 GSN is detailed in the following paper:
 
-**Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).**
+**[Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).](https://www.biorxiv.org/content/10.1101/2024.04.22.590510v1)**
 
 If you have questions or discussion points, please use the Discussions
 feature of this GitHub repository. If you find a bug, 
@@ -35,10 +35,12 @@ pip install git+https://github.com/cvnlab/GSN.git
 Running the example scripts requires:
 
 - installing jupyter notebook or jupyter lab
+- installing matplotlib
 - cloning the GSN repository in order to get the example scripts located in `examples`:
 
 ```bash
 pip install jupyterlab
+pip install "matplotlib<3.9.0"
 git clone https://github.com/cvnlab/GSN.git
 ```
 
@@ -64,9 +66,11 @@ Terms of use: This content is licensed under a BSD 3-Clause License.
 
 If you use GSN in your research, please cite the following paper:
 
-* **Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).**
+* **[Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).](https://www.biorxiv.org/content/10.1101/2024.04.22.590510v1)**
 
 ## Change history
+
+* 2024/04/28 - Version 1.0 of GSN released. Accompanies the bioRxiv preprint.
 
 [pre-release updates; early-stage testing]
 * 2024/02/25 - Completed port of matlab algorithmic changes to python. 
