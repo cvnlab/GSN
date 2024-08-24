@@ -112,8 +112,11 @@ def rsa_noise_ceiling(data, opt = None):
                 distribution. Note that this is computed on the raw
                 estimated covariances. Also, note that we apply positive
                 rectification (to prevent non-sensical negative ncsnr values).
+        numiters - the number of iterations used in the biconvex optimization.
+                0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2024/08/24 - add results['numiters']
     - 2024/01/05:
         (1) Major change to use the biconvex optimization procedure --
             we now have cSb and cNb as the final estimates;
@@ -205,6 +208,7 @@ def rsa_noise_ceiling(data, opt = None):
     cNb = cN
     cSb_old = cS
     cNb_old = cN
+    numiters = 0  # numiters == 0 means the first estimate was already PSD
 
     while True:
         # calculate new estimate of cSb
@@ -225,6 +229,7 @@ def rsa_noise_ceiling(data, opt = None):
             break
 
         # update
+        numiters += 1
         cSb_old = cSb
         cNb_old = cNb
 
@@ -421,7 +426,8 @@ def rsa_noise_ceiling(data, opt = None):
         'cSb': cSb,
         'sc': sc,
         'splitr': splitr,
-        'ncsnr': ncsnr
+        'ncsnr': ncsnr,
+        'numiters': numiters
     }
 
     # MAKE A FIGURE

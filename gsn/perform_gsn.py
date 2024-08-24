@@ -28,8 +28,11 @@ def perform_gsn(data, opt=None):
                 distribution. Note that this is computed on the raw
                 estimated covariances. Also, note that we apply positive
                 rectification (to prevent non-sensical negative ncsnr values).
+        numiters - the number of iterations used in the biconvex optimization.
+                0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2024/08/24 - add results['numiters']
     - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
                        we now have cSb and cNb as the final estimates;
                    (2) cSb no longer has the scaling baked in and instead we
