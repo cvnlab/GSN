@@ -116,6 +116,7 @@ def rsa_noise_ceiling(data, opt = None):
                 0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2024/09/11 - misc. bug fixes
     - 2024/08/24 - add results['numiters']
     - 2024/01/05:
         (1) Major change to use the biconvex optimization procedure --
