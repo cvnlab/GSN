@@ -49,7 +49,7 @@ def nanreplace(m, val=0, mode=0):
     Replace NaN or non-finite values in a matrix with a specified value.
 
     Parameters:
-    m (numpy.ndarray): A matrix.
+    m (numpy.ndarray or scalar): A matrix or scalar.
     val (optional, scalar): The value to replace NaNs with. Default is 0.
     mode (optional, int):
         0 means replace all NaNs in m with val.
@@ -65,6 +65,10 @@ def nanreplace(m, val=0, mode=0):
     assert np.array_equal(nanreplace(np.array([1, np.nan]), 0), np.array([1, 0]))
     assert np.array_equal(nanreplace(np.array([np.nan, 2, 3]), 0, 1), np.array([0, 0, 0]))
     """
+    
+    # Check if m is a scalar, and if so, wrap it in a numpy array
+    if np.isscalar(m):
+        m = np.array([m])
 
     if mode == 0:
         m[np.isnan(m)] = val
@@ -115,7 +119,7 @@ def zerodiv(x, y, val=0, wantcaution=1):
                 warnings.warn('abs value of divisor is less than 1e-5. we are treating the divisor as 0.')
                 return np.full(x.shape, val)
             else:
-                return x / y[:, np.newaxis]
+                return x / y # direct division by scalar y
     else:
         bad = y == 0
         bad2 = abs(y) < 1e-5  # see allzero.m
