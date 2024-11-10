@@ -274,8 +274,6 @@ def plot_basis_dim_ncsnrs(data, eigvecs, basis_name, threshold = None, subplots 
         ncsnrs.append(ncsnr)
         sigvars.append(sigvar)
         noisevars.append(noisevar)
-
-    #plt.figure(figsize=(16,5.5))
     
     plt.subplot(subplots[0])
     plt.plot(np.sqrt(sigvars),linewidth=3,label='signal SD')
@@ -289,7 +287,6 @@ def plot_basis_dim_ncsnrs(data, eigvecs, basis_name, threshold = None, subplots 
         plt.plot([threshold.mean(),threshold.mean()],[0,6],'g--',linewidth=2,label=f'optimal PC threshold: {threshold.mean()}')
     plt.ylim([-0.2,5.1])
     plt.legend()
-
     
     plt.subplot(subplots[1])
     plt.plot(ncsnrs,linewidth=3,color='m',label='ncsnr')
@@ -302,6 +299,5 @@ def plot_basis_dim_ncsnrs(data, eigvecs, basis_name, threshold = None, subplots 
         plt.plot([threshold.mean(),threshold.mean()],[0,6],'g--',linewidth=2,label=f'optimal PC threshold: {threshold.mean()}')
     plt.legend()
     plt.ylim([-0.05,1.3])
-    #plt.show()
     
     return
