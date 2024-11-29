@@ -54,8 +54,8 @@ data = X.data;
 % The dataset contains 100 voxels x 200 conditions x 3 trials
 % Split data into training (even indices) and testing (odd indices)
 
-train_data = data(:, 1:end, :);
-test_data = data(:, 1:end, :);
+train_data = data(:, 1:2:end, :);
+test_data = data(:, 2:2:end, :);
 
 % Extract dataset dimensions
 [nvox, ncond, ntrial] = size(train_data);
@@ -138,7 +138,7 @@ V = real(V(:, idx));
 %% Compute the Denoising Matrix
 % Configure options for the denoiser
 
-opt.threshold_per = 'unit';
+opt.threshold_per = 'population';
 opt.scoring_fn = @negativemsecolumns;  % Define or implement this function
 opt.thresholds = 1:nvox;
 opt.cv_mode = 0;
