@@ -9,10 +9,12 @@ function [denoiser, denoised_cv_scores, best_threshold] = computedenoiser(data, 
 % <V> is nunits x nunits basis matrix used for projection and denoising.
 % <opt> (optional) is a struct with the following optional fields:
 %   <thresholds> (optional) list or array of thresholds for denoising.
-%   Default: 1:nunits. <scoring_fn> (optional) function handle to compute
-%   denoised performance. Default: @negative_mse_columns. <threshold_per>
-%   (optional) 'population' or 'unit', specifying thresholding method.
-%   Default: 'population'. <cv_mode> (optional) int, cross-validation mode:
+%   Default: 1:nunits. 
+%   <scoring_fn> (optional) function handle to compute
+%   denoised performance. Default: @negative_mse_columns. 
+%   <threshold_per> (optional) 'population' or 'unit', specifying thresholding 
+%    method. Default: 'unit'. 
+%   <cv_mode> (optional) int, cross-validation mode:
 %       0 - Denoise using single trial against the mean of other trials
 %       (default). 1 - Denoise using the mean of trials against a single
 %       trial.
@@ -52,7 +54,7 @@ function [denoiser, denoised_cv_scores, best_threshold] = computedenoiser(data, 
         opt = struct();
     end
     if ~isfield(opt, 'thresholds')
-        opt.thresholds = 0:nunits;
+        opt.thresholds = 1:nunits;
     end
     if ~isfield(opt, 'scoring_fn')
         opt.scoring_fn = @negative_mse_columns;
