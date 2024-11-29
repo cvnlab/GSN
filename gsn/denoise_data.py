@@ -62,9 +62,9 @@ def compute_denoiser(data, V, opt={}):
     nunits, nconds, ntrials = data.shape
     
     # Set default values for dictionary fields if they are missing
-    opt.setdefault('thresholds', np.arange(nunits))
+    opt.setdefault('thresholds', np.arange(1,nunits+1))
     opt.setdefault('scoring_fn', negative_mse_columns)
-    opt.setdefault('threshold_per', 'population')
+    opt.setdefault('threshold_per', 'unit')
     opt.setdefault('cv_mode', 0)
     
     # Initialize array to hold denoised tuning correlations
