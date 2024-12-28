@@ -199,7 +199,7 @@ def rsa_noise_ceiling(data, opt = None):
     # prepare some outputs
     sd_noise = np.sqrt(np.maximum(np.diag(cN), 0))   # std of the noise (1 x voxels)
     sd_signal = np.sqrt(np.maximum(np.diag(cS), 0))  # std of the signal (1 x voxels)
-    ncsnr = sd_signal / sd_noise                     # noise ceiling SNR (1 x voxels)
+    ncsnr = np.divide(sd_signal, sd_noise, out=np.zeros_like(sd_signal), where=sd_noise!=0)
 
     # BICONVEX OPTIMIZATION
     if opt['wantverbose']:

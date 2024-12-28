@@ -122,6 +122,15 @@ def calc_shrunken_covariance(data,
         
         # calculate covariance from the training data (variables x variables)
         c = np.cov(data[iinot].T, bias = False)
+        
+        # If covariance matrix is singular or SVD doesn't converge, add small diagonal term
+        try:
+            rank = np.linalg.matrix_rank(c)
+        except np.linalg.LinAlgError:
+            c = c + np.eye(c.shape[0]) * 1e-6
+        else:
+            if rank < c.shape[0]:
+                c = c + np.eye(c.shape[0]) * 1e-6
                 
         # calculate the mean from the training data (1 x variables)
         mn = np.mean(data[iinot],0)
