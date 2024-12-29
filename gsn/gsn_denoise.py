@@ -4,19 +4,6 @@ from gsn.calc_cod import calc_cod
 from gsn.utilities import zerodiv
 from gsn.convert_covariance_to_correlation import convert_covariance_to_correlation
 
-def negative_mse_columns(x, y):
-    """Calculate the negative mean squared error per column.
-    
-    Args:
-        x: array of shape (nconds, nunits)
-        y: array of shape (nconds, nunits)
-    Returns:
-        array of shape (nunits,) containing negative MSE for each column
-    """
-    if x.shape[0] == 0 or y.shape[0] == 0:
-        return np.zeros(x.shape[1])  # Return zeros for empty arrays
-    return -np.mean((x - y) ** 2, axis=0)
-
 def gsn_denoise(data, V=None, opt=None):
     """
     Main entry point for denoising.
@@ -217,55 +204,74 @@ def gsn_denoise(data, V=None, opt=None):
         denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce, mags, dimsretained = perform_magnitude_thresholding(data, basis, gsn_results, opt, V)
         return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, stored_mags, dimsretained, signalsubspace, dimreduce
 
-
 def perform_cross_validation(data, basis, opt):
-    """Perform cross-validation to find optimal threshold."""
+    """Perform cross-validation to find optimal threshold.
+    
+    cv_mode options:
+    0: Denoise the average of n-1 trials, test against held out trial
+    1: Denoise single trial, test against average of n-1 trials
+    -1: No cross-validation, use magnitude thresholding instead
+    """
     nunits, nconds, ntrials = data.shape
     cv_mode = opt['cv_mode']
     thresholds = opt['cv_thresholds']
     opt.setdefault('cv_scoring_fn', negative_mse_columns)
     threshold_per = opt.get('cv_threshold_per')
-    if threshold_per not in ['unit', 'population']:
-        raise KeyError("cv_threshold_per must be either 'unit' or 'population'")
     scoring_fn = opt['cv_scoring_fn']
     denoisingtype = opt.get('denoisingtype', 0)
-
-    # Initialize cv_scores with correct shape (len(thresholds), ntrials, nunits)
+    
+    # Initialize cv_scores
     cv_scores = np.zeros((len(thresholds), ntrials, nunits))
 
-    if cv_mode in [0, 1]:
-        for split_idx in range(ntrials):
-            # Train/test split
-            if cv_mode == 0:
-                train_mask = [i for i in range(ntrials) if i != split_idx]
-                test_mask = [split_idx]
-            else:
-                train_mask = [split_idx]
-                test_mask = [i for i in range(ntrials) if i != split_idx]
+    if cv_mode == -1:
+        # No cross-validation - use magnitude thresholding
+        data_ctv = data.copy().transpose(1, 2, 0)  # (nconds, ntrials, nunits)
+        ncsnrs = np.zeros(nunits)
+        for i in range(data_ctv.shape[2]):
+            this_eigv = basis[:, i]
+            proj_data = np.dot(data_ctv, this_eigv)
+            _, ncsnr, _, _ = compute_noise_ceiling(proj_data[np.newaxis, ...])
+            ncsnrs[i] = ncsnr
 
-            train_data = data[:, :, train_mask]
-            test_data = data[:, :, test_mask]
+        # Find first index where SNR hits 0
+        if np.sum(ncsnrs == 0) == 0:
+            raise ValueError('Basis SNR never hits 0. Adjust cross-validation settings.')
+        best_threshold = np.argwhere(ncsnrs == 0)[0, 0]
+        denoising_fn = np.concatenate([np.ones(best_threshold), np.zeros(nunits - best_threshold)])
+        denoiser = basis @ np.diag(denoising_fn) @ basis.T
+        return denoiser, cv_scores, best_threshold, None, basis, None, None
 
-            # Skip empty folds
-            if train_data.shape[2] == 0 or test_data.shape[2] == 0:
-                continue
-
-            # Safe mean calculation
-            train_avg = np.mean(train_data, axis=2) if train_data.shape[2] > 0 else np.zeros((nunits, nconds))
-            test_avg = np.mean(test_data, axis=2) if test_data.shape[2] > 0 else np.zeros((nunits, nconds))
-
-            for i, thr in enumerate(thresholds):
-                # Clamp thr so we don't exceed basis columns
-                safe_thr = min(thr, basis.shape[1])
-                denoiser_i = basis[:, :safe_thr] @ basis[:, :safe_thr].T  # (nunits, nunits)
-                reconstructed = test_avg.T @ denoiser_i  # (nconds, nunits)
-                # scoring_fn expects (nconds, nunits), so transpose
-                score = scoring_fn(reconstructed, test_avg.T)
-                cv_scores[i, split_idx, :] = score
-
-    else:
-        raise NotImplementedError(f"cv_mode={cv_mode} not implemented.")
-
+    for tr in range(ntrials):
+        # Define cross-validation splits based on cv_mode
+        if cv_mode == 0:
+            # Denoise average of n-1 trials, test against held out trial
+            train_trials = np.setdiff1d(np.arange(ntrials), tr)
+            train_avg = np.mean(data[:, :, train_trials], axis=2)  # Average n-1 trials
+            test_data = data[:, :, tr]  # Single held-out trial
+            
+            for tt, threshold in enumerate(thresholds):
+                safe_thr = min(threshold, basis.shape[1])
+                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(nunits - safe_thr)])
+                denoiser = basis @ np.diag(denoising_fn) @ basis.T
+                
+                # Denoise the training average
+                train_denoised = (train_avg.T @ denoiser).T
+                cv_scores[tt, tr] = scoring_fn(test_data.T, train_denoised.T)
+                  
+        elif cv_mode == 1:
+            # Denoise single trial, test against average of n-1 trials
+            dataA = data[:, :, tr].T  # Single trial (nconds x nunits)
+            dataB = np.mean(data[:, :, np.setdiff1d(np.arange(ntrials), tr)], axis=2).T  # Mean of other trials
+            
+            for tt, threshold in enumerate(thresholds):
+                safe_thr = min(threshold, basis.shape[1])
+                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(nunits - safe_thr)])
+                denoiser = basis @ np.diag(denoising_fn) @ basis.T
+                
+                # Denoise the single trial
+                dataA_denoised = dataA @ denoiser
+                cv_scores[tt, tr] = scoring_fn(dataB, dataA_denoised)
+                
     # Decide best threshold
     if threshold_per == 'population':
         # Average over trials and units for population threshold
@@ -291,8 +297,7 @@ def perform_cross_validation(data, basis, opt):
     if denoisingtype == 0:
         # Trial-averaged denoising
         trial_avg = np.mean(data, axis=2)
-        denoiseddata = trial_avg.T @ denoiser  # (nconds, nunits)
-        denoiseddata = denoiseddata.T  # (nunits, nconds)
+        denoiseddata = (trial_avg.T @ denoiser).T
     else:
         # Single-trial denoising
         denoiseddata = np.zeros_like(data)
@@ -302,23 +307,21 @@ def perform_cross_validation(data, basis, opt):
     # Calculate additional return values
     fullbasis = basis.copy()
     signalsubspace = basis[:, :safe_thr]
+    
     # Project data onto signal subspace
     if denoisingtype == 0:
         trial_avg = np.mean(data, axis=2)
-        dimreduce = trial_avg.T @ signalsubspace  # (nconds, safe_thr)
-        dimreduce = dimreduce.T  # (safe_thr, nconds)
+        dimreduce = signalsubspace.T @ trial_avg  # (safe_thr, nconds)
     else:
         dimreduce = np.zeros((safe_thr, nconds, ntrials))
         for t in range(ntrials):
-            dimreduce_t = data[:, :, t].T @ signalsubspace  # (nconds, safe_thr)
-            dimreduce[:, :, t] = dimreduce_t.T  # (safe_thr, nconds)
+            dimreduce[:, :, t] = signalsubspace.T @ data[:, :, t]
 
     # Return values based on threshold_per
     if threshold_per == 'population':
         return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce
     else:  # 'unit'
         return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, None, None
-
 
 def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     """Perform magnitude thresholding to determine the optimal number of dimensions to retain.
@@ -341,6 +344,7 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
         mags: array of component magnitudes
         dimsretained: scalar integer indicating number of dimensions retained
     """
+    
     nunits, nconds, ntrials = data.shape
     mag_type = opt.get('mag_type', 0)
     mag_frac = opt.get('mag_frac', 0.01)
@@ -353,121 +357,108 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     # Get magnitudes based on mag_type
     if mag_type == 0:
         # Eigen-based threshold
-        if gsn_results is None:
-            # If no GSN results, we cannot proceed
-            best_threshold = 0
-            denoiser = np.zeros((nunits, nunits))
-            if threshold_per == 'unit':
-                best_threshold = np.zeros(nunits)
-            if denoisingtype == 0:
-                denoiseddata = np.zeros((nunits, nconds))
-            else:
-                denoiseddata = np.zeros_like(data)
-            signalsubspace = basis[:, :0]  # Empty but valid signalsubspace
-            dimreduce = np.zeros((0, nconds))  # Empty but valid dimreduce
-            return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, None, 0
-
-        cSb = gsn_results['cSb']
-        cNb = gsn_results['cNb']
-        cNb_inv = np.linalg.pinv
-
         if isinstance(V, (int, np.integer)):
             if V == 0:
-                evals = np.linalg.eigvalsh(cSb)
-                magnitudes = np.abs(evals)
+                evals = np.linalg.eigvalsh(gsn_results['cSb'])
+                magnitudes = evals  # Keep original order for eigenvalues
             elif V == 1:
-                matM = cNb_inv(cNb) @ cSb
+                cNb_inv = np.linalg.pinv(gsn_results['cNb'])
+                matM = cNb_inv @ gsn_results['cSb']
                 evals = np.linalg.eigvalsh(matM)
-                magnitudes = np.abs(evals)
+                magnitudes = evals  # Keep original order for eigenvalues
             elif V == 2:
-                evals = np.linalg.eigvalsh(cNb)
-                magnitudes = np.abs(evals)
+                evals = np.linalg.eigvalsh(gsn_results['cNb'])
+                magnitudes = evals  # Keep original order for eigenvalues
             elif V == 3:
-                if ntrials > 0:
-                    trial_avg = np.mean(data, axis=2)
-                    cov_mat = np.cov(trial_avg.T)
-                    evals = np.linalg.eigvalsh(cov_mat)
-                    magnitudes = np.abs(evals)
-                else:
-                    magnitudes = np.array([])
-            else:  # V == 4 or other
-                magnitudes = np.array([])
+                trial_avg = np.mean(data, axis=2)
+                cov_mat = np.cov(trial_avg.T)
+                evals = np.linalg.eigvalsh(cov_mat)
+                magnitudes = evals  # Keep original order for eigenvalues
+            else:  # V == 4
+                magnitudes = np.ones(basis.shape[1])
         else:
-            magnitudes = np.array([])
+            # For user-supplied basis, compute projection variances
+            trial_avg = np.mean(data, axis=2)
+            proj = trial_avg.T @ basis
+            magnitudes = np.var(proj, axis=0)
     else:
         # Variance-based threshold in user basis
-        if basis is None:
-            magnitudes = np.array([])
-        else:
-            trial_avg = np.mean(data, axis=2)  # (nunits x nconds)
-            proj = trial_avg.T @ basis  # (nconds x basis_dim)
-            magnitudes = np.var(proj, axis=0)  # Row vector
+        trial_avg = np.mean(data, axis=2)
+        proj = trial_avg.T @ basis
+        magnitudes = np.var(proj, axis=0)
 
-    # If no magnitudes, we can't proceed
-    if len(magnitudes) == 0:
-        denoiser = np.zeros((nunits, nunits))
-        if threshold_per == 'unit':
-            best_threshold = np.zeros(nunits)
-        else:
-            best_threshold = 0
-        if denoisingtype == 0:
-            denoiseddata = np.zeros((nunits, nconds))
-        else:
-            denoiseddata = np.zeros_like(data)
-        signalsubspace = basis[:, :0]  # Empty but valid signalsubspace
-        dimreduce = np.zeros((0, nconds))  # Empty but valid dimreduce
-        return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, 0
+    # Determine threshold as fraction of maximum magnitude
+    threshold_val = mag_frac * np.max(np.abs(magnitudes))
+    surviving = np.abs(magnitudes) >= threshold_val
 
-    # Determine threshold_val as fraction of max
-    threshold_val = mag_frac * np.max(magnitudes)
-    surviving = magnitudes >= threshold_val
+    # Find dimensions to retain based on mag_mode
+    surv_idx = np.where(surviving)[0]
 
-    if mag_mode == 0:
-        # Contiguous - find last surviving index
-        surv_idx = np.where(surviving)[0]
+    if mag_mode == 0:  # Contiguous from left
         if len(surv_idx) == 0:
-            best_threshold = np.array([])
-            dimsretained = 0
+            dimsretained = 1
+            best_threshold = np.array([0])
         else:
-            last_idx = surv_idx[-1]
-            best_threshold = np.arange(last_idx + 1)
-            dimsretained = len(best_threshold)
+            # For contiguous from left, we want the leftmost block
+            # Find the first gap after the start
+            if len(surv_idx) == 1:
+                dimsretained = 1
+                best_threshold = surv_idx
+            else:
+                # Take all dimensions up to the first gap
+                gaps = np.where(np.diff(surv_idx) > 1)[0]
+                if len(gaps) > 0:
+                    dimsretained = gaps[0] + 1
+                    best_threshold = surv_idx[:dimsretained]
+                else:
+                    # No gaps, take all surviving dimensions
+                    dimsretained = len(surv_idx)
+                    best_threshold = surv_idx
+    else:  # Keep all dimensions above threshold
+        if len(surv_idx) == 0:
+            dimsretained = 1
+            best_threshold = np.array([0])
+        else:
+            dimsretained = len(surv_idx)
+            best_threshold = surv_idx
+
+    # Create denoising matrix using retained dimensions
+    denoising_fn = np.zeros(basis.shape[1])
+    denoising_fn[best_threshold] = 1
+    denoiser = basis @ np.diag(denoising_fn) @ basis.T
+
+    # Calculate denoised data
+    if denoisingtype == 0:
+        # Trial-averaged denoising
+        trial_avg = np.mean(data, axis=2)
+        denoiseddata = (trial_avg.T @ denoiser).T
     else:
-        # Keep all that survive
-        best_threshold = np.where(surviving)[0]
-        dimsretained = len(best_threshold)
+        # Single-trial denoising
+        denoiseddata = np.zeros_like(data)
+        for t in range(ntrials):
+            denoiseddata[:, :, t] = (data[:, :, t].T @ denoiser).T
 
-    if len(best_threshold) == 0:
-        denoiser = np.zeros((nunits, nunits))
-        signalsubspace = basis[:, :0]  # Empty but valid signalsubspace
-        if denoisingtype == 0:
-            denoiseddata = np.zeros((nunits, nconds))
-            dimreduce = np.zeros((0, nconds))  # Empty but valid dimreduce
-        else:
-            denoiseddata = np.zeros_like(data)
-            dimreduce = np.zeros((0, nconds, ntrials))  # Empty but valid dimreduce
+    # Calculate signal subspace and reduced dimensions
+    signalsubspace = basis[:, best_threshold]
+    if denoisingtype == 0:
+        trial_avg = np.mean(data, axis=2)
+        dimreduce = signalsubspace.T @ trial_avg
     else:
-        signalsubspace = basis[:, best_threshold]
-        denoiser = signalsubspace @ signalsubspace.T
-
-        # Project data into reduced dimensions
-        if denoisingtype == 0:
-            # Trial-averaged data
-            trial_avg = np.mean(data, axis=2)
-            dimreduce = signalsubspace.T @ trial_avg
-            denoiseddata = signalsubspace @ dimreduce
-        else:
-            # Single-trial data
-            dimreduce = np.zeros((len(best_threshold), nconds, ntrials))
-            denoiseddata = np.zeros_like(data)
-            for tr in range(ntrials):
-                dimreduce[:, :, tr] = signalsubspace.T @ data[:, :, tr]
-                denoiseddata[:, :, tr] = signalsubspace @ dimreduce[:, :, tr]
-
-    # Return length-based threshold for 'unit'
-    if threshold_per == 'unit':
-        best_threshold = np.full(nunits, dimsretained)
+        dimreduce = np.zeros((len(best_threshold), nconds, ntrials))
+        for t in range(ntrials):
+            dimreduce[:, :, t] = signalsubspace.T @ data[:, :, t]
 
     return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
+
+def negative_mse_columns(x, y):
+    """Calculate the negative mean squared error per column.
     
-    
+    Args:
+        x: array of shape (nconds, nunits)
+        y: array of shape (nconds, nunits)
+    Returns:
+        array of shape (nunits,) containing negative MSE for each column
+    """
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        return np.zeros(x.shape[1])  # Return zeros for empty arrays
+    return -np.mean((x - y) ** 2, axis=0)
