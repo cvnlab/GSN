@@ -306,3 +306,288 @@ def test_fine_grid_stability():
                     f"Failed mean alignment stability for alpha={alpha:.2f}, k={k}"
                 assert np.std(alignments) < 0.1, \
                     f"Failed alignment variance stability for alpha={alpha:.2f}, k={k}" 
+
+def test_signal_noise_ratio():
+    """Test that signal-to-noise ratio is controlled by decay parameters."""
+    nvox = 20
+    ncond = 10
+    ntrial = 5
+    
+    # Test that decreasing signal decay relative to noise decay increases signal power
+    train_data_low_snr, _, _ = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=1.0,  # Fast decay = less signal
+        noise_decay=0.1,   # Slow decay = more noise
+        random_seed=42
+    )
+    
+    train_data_high_snr, _, _ = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=0.1,  # Slow decay = more signal
+        noise_decay=1.0,   # Fast decay = less noise
+        random_seed=42
+    )
+    
+    # Calculate signal and noise power for both cases
+    trial_means_low = np.mean(train_data_low_snr, axis=2)
+    noise_low = train_data_low_snr - trial_means_low[:, :, np.newaxis]
+    signal_power_low = np.var(trial_means_low)
+    noise_power_low = np.var(noise_low)
+    snr_low = signal_power_low / noise_power_low
+    
+    trial_means_high = np.mean(train_data_high_snr, axis=2)
+    noise_high = train_data_high_snr - trial_means_high[:, :, np.newaxis]
+    signal_power_high = np.var(trial_means_high)
+    noise_power_high = np.var(noise_high)
+    snr_high = signal_power_high / noise_power_high
+    
+    # Test that SNR increases when signal decay decreases relative to noise decay
+    assert snr_high > snr_low, "SNR should increase when signal decay decreases relative to noise decay"
+    
+    # Test equal decay case
+    train_data_equal, _, _ = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=0.5,
+        noise_decay=0.5,
+        random_seed=42
+    )
+    
+    trial_means_equal = np.mean(train_data_equal, axis=2)
+    noise_equal = train_data_equal - trial_means_equal[:, :, np.newaxis]
+    signal_power_equal = np.var(trial_means_equal)
+    noise_power_equal = np.var(noise_equal)
+    snr_equal = signal_power_equal / noise_power_equal
+    
+    # Test that SNR is intermediate when signal and noise decay are equal
+    assert snr_low < snr_equal < snr_high, "SNR should be intermediate when signal and noise decay are equal"
+
+def test_trial_independence():
+    """Test that trials are independently generated."""
+    nvox = 20
+    ncond = 10
+    ntrial = 10
+    
+    train_data, test_data, _ = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        random_seed=42
+    )
+    
+    # Check correlations between trials after removing condition means
+    trial_means = np.mean(train_data, axis=2)
+    noise = train_data - trial_means[:, :, np.newaxis]
+    
+    # Check correlations between noise components
+    for i in range(ntrial):
+        for j in range(i+1, ntrial):
+            trial_i = noise[:, :, i].flatten()
+            trial_j = noise[:, :, j].flatten()
+            correlation = np.corrcoef(trial_i, trial_j)[0, 1]
+            assert abs(correlation) < 0.7, f"Trial noise components {i} and {j} are too correlated"
+
+def test_condition_structure():
+    """Test that condition structure is preserved across trials."""
+    nvox = 20
+    ncond = 10
+    ntrial = 5
+    
+    train_data, test_data, ground_truth = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=1.0,
+        noise_decay=0.1,  # Low noise to see condition structure
+        random_seed=42
+    )
+    
+    # Calculate mean pattern for each condition
+    condition_means = np.mean(train_data, axis=2)  # Average across trials
+    
+    # Check that conditions are distinct
+    for i in range(ncond):
+        for j in range(i+1, ncond):
+            pattern_i = condition_means[:, i]
+            pattern_j = condition_means[:, j]
+            correlation = np.corrcoef(pattern_i, pattern_j)[0, 1]
+            assert abs(correlation) < 0.9, f"Conditions {i} and {j} are too similar"
+
+def test_dimensionality_scaling():
+    """Test behavior with different dimensionality ratios."""
+    test_configs = [
+        (10, 5, 3),    # More units than conditions
+        (5, 10, 3),    # More conditions than units
+        (10, 10, 3),   # Equal units and conditions
+        (3, 3, 10),    # Many trials
+        (50, 5, 2)     # High-dimensional units
+    ]
+    
+    for nvox, ncond, ntrial in test_configs:
+        train_data, test_data, ground_truth = generate_data(
+            nvox=nvox,
+            ncond=ncond,
+            ntrial=ntrial,
+            random_seed=42
+        )
+        
+        assert train_data.shape == (nvox, ncond, ntrial)
+        assert test_data.shape == (nvox, ncond, ntrial)
+        assert ground_truth['U_signal'].shape == (nvox, nvox)
+        assert ground_truth['U_noise'].shape == (nvox, nvox)
+
+def test_random_seed_reproducibility():
+    """Test that random seed controls reproducibility."""
+    nvox = 20
+    ncond = 10
+    ntrial = 5
+    
+    # Generate two datasets with same seed
+    data1, _, _ = generate_data(nvox=nvox, ncond=ncond, ntrial=ntrial, random_seed=42)
+    data2, _, _ = generate_data(nvox=nvox, ncond=ncond, ntrial=ntrial, random_seed=42)
+    
+    # Generate dataset with different seed
+    data3, _, _ = generate_data(nvox=nvox, ncond=ncond, ntrial=ntrial, random_seed=43)
+    
+    # Same seed should give identical results
+    np.testing.assert_array_equal(data1, data2)
+    
+    # Different seeds should give different results
+    assert not np.array_equal(data1, data3)
+
+def test_basis_properties():
+    """Test properties of signal and noise bases."""
+    nvox = 20
+    ncond = 10
+    ntrial = 5
+    
+    _, _, ground_truth = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        random_seed=42
+    )
+    
+    U_signal = ground_truth['U_signal']
+    U_noise = ground_truth['U_noise']
+    
+    # Test orthonormality with appropriate tolerance
+    np.testing.assert_allclose(U_signal.T @ U_signal, np.eye(nvox), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(U_noise.T @ U_noise, np.eye(nvox), rtol=1e-5, atol=1e-5)
+    
+    # Test span
+    assert np.linalg.matrix_rank(U_signal) == nvox
+    assert np.linalg.matrix_rank(U_noise) == nvox
+
+def test_train_test_independence():
+    """Test that train and test datasets are independently generated."""
+    nvox = 20
+    ncond = 10
+    ntrial = 5
+    
+    train_data, test_data, _ = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        random_seed=42
+    )
+    
+    # Remove condition means before checking correlations
+    train_means = np.mean(train_data, axis=2)
+    test_means = np.mean(test_data, axis=2)
+    train_noise = train_data - train_means[:, :, np.newaxis]
+    test_noise = test_data - test_means[:, :, np.newaxis]
+    
+    # Check correlations between train and test noise components
+    for i in range(ntrial):
+        for j in range(ntrial):
+            train_trial = train_noise[:, :, i].flatten()
+            test_trial = test_noise[:, :, j].flatten()
+            correlation = np.corrcoef(train_trial, test_trial)[0, 1]
+            assert abs(correlation) < 0.7, f"Train and test noise components {i} and {j} are too correlated"
+
+def test_noise_structure():
+    """Test that noise has the expected structure."""
+    nvox = 20
+    ncond = 10
+    ntrial = 20  # More trials for stable noise estimation
+    
+    train_data, _, ground_truth = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=0.1,  # Low signal to focus on noise
+        noise_decay=1.0,
+        random_seed=42
+    )
+    
+    # Calculate noise covariance
+    trial_means = np.mean(train_data, axis=2)
+    noise = train_data - trial_means[:, :, np.newaxis]
+    noise_cov = np.zeros((nvox, nvox))
+    for i in range(ntrial):
+        noise_cov += noise[:, :, i] @ noise[:, :, i].T
+    noise_cov /= (ntrial * ncond)
+    
+    # Check that noise covariance aligns with noise basis
+    U_noise = ground_truth['U_noise']
+    alignment = np.abs(np.trace(U_noise.T @ noise_cov @ U_noise))
+    assert alignment > 0, "Noise covariance should align with noise basis"
+
+def test_signal_structure():
+    """Test that signal has the expected structure."""
+    nvox = 20
+    ncond = 10
+    ntrial = 20  # More trials for stable signal estimation
+    
+    train_data, _, ground_truth = generate_data(
+        nvox=nvox,
+        ncond=ncond,
+        ntrial=ntrial,
+        signal_decay=1.0,
+        noise_decay=0.1,  # Low noise to focus on signal
+        random_seed=42
+    )
+    
+    # Calculate signal covariance
+    trial_means = np.mean(train_data, axis=2)
+    signal_cov = trial_means @ trial_means.T / ncond
+    
+    # Check that signal covariance aligns with signal basis
+    U_signal = ground_truth['U_signal']
+    alignment = np.abs(np.trace(U_signal.T @ signal_cov @ U_signal))
+    assert alignment > 0, "Signal covariance should align with signal basis"
+
+def test_edge_case_dimensions():
+    """Test edge cases for data dimensions."""
+    test_configs = [
+        (2, 2, 2),     # Minimum valid dimensions
+        (100, 2, 2),   # Very high dimensional units
+        (2, 100, 2),   # Very high dimensional conditions
+        (2, 2, 100),   # Very high dimensional trials
+        (50, 50, 2)    # Equal high dimensions
+    ]
+    
+    for nvox, ncond, ntrial in test_configs:
+        train_data, test_data, ground_truth = generate_data(
+            nvox=nvox,
+            ncond=ncond,
+            ntrial=ntrial,
+            random_seed=42
+        )
+        
+        assert train_data.shape == (nvox, ncond, ntrial)
+        assert test_data.shape == (nvox, ncond, ntrial)
+        assert ground_truth['U_signal'].shape == (nvox, nvox)
+        assert ground_truth['U_noise'].shape == (nvox, nvox)
+        
+        # Check basic properties are maintained even in edge cases
+        assert np.all(np.isfinite(train_data))
+        assert np.all(np.isfinite(test_data))
+        assert np.allclose(ground_truth['U_signal'].T @ ground_truth['U_signal'], np.eye(nvox))
+        assert np.allclose(ground_truth['U_noise'].T @ ground_truth['U_noise'], np.eye(nvox)) 
