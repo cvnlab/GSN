@@ -95,6 +95,13 @@ def gsn_denoise(data, V=None, opt=None):
     # 4) Prepare default opts
     if opt is None:
         opt = {}
+        
+    # Validate cv_threshold_per before setting defaults
+    if 'cv_threshold_per' in opt:
+        if opt['cv_threshold_per'] not in ['unit', 'population']:
+            raise KeyError("cv_threshold_per must be 'unit' or 'population'")
+            
+    # Now set defaults
     opt.setdefault('cv_scoring_fn', negative_mse_columns)
     opt.setdefault('cv_mode', 0)
     opt.setdefault('cv_threshold_per', 'unit')
@@ -237,7 +244,7 @@ def perform_cross_validation(data, basis, opt):
         if np.sum(ncsnrs == 0) == 0:
             raise ValueError('Basis SNR never hits 0. Adjust cross-validation settings.')
         best_threshold = np.argwhere(ncsnrs == 0)[0, 0]
-        denoising_fn = np.concatenate([np.ones(best_threshold), np.zeros(nunits - best_threshold)])
+        denoising_fn = np.concatenate([np.ones(best_threshold), np.zeros(basis.shape[1] - best_threshold)])
         denoiser = basis @ np.diag(denoising_fn) @ basis.T
         return denoiser, cv_scores, best_threshold, None, basis, None, None
 
@@ -251,7 +258,7 @@ def perform_cross_validation(data, basis, opt):
             
             for tt, threshold in enumerate(thresholds):
                 safe_thr = min(threshold, basis.shape[1])
-                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(nunits - safe_thr)])
+                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(basis.shape[1] - safe_thr)])
                 denoiser = basis @ np.diag(denoising_fn) @ basis.T
                 
                 # Denoise the training average
@@ -265,7 +272,7 @@ def perform_cross_validation(data, basis, opt):
             
             for tt, threshold in enumerate(thresholds):
                 safe_thr = min(threshold, basis.shape[1])
-                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(nunits - safe_thr)])
+                denoising_fn = np.concatenate([np.ones(safe_thr), np.zeros(basis.shape[1] - safe_thr)])
                 denoiser = basis @ np.diag(denoising_fn) @ basis.T
                 
                 # Denoise the single trial
@@ -393,6 +400,16 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
 
     # Find dimensions to retain based on mag_mode
     surv_idx = np.where(surviving)[0]
+
+    if len(surv_idx) == 0:
+        # If no dimensions survive, return zero matrices
+        denoiser = np.zeros((nunits, nunits))
+        denoiseddata = np.zeros((nunits, nconds))
+        signalsubspace = basis[:, :0]  # Empty but valid shape
+        dimreduce = np.zeros((0, nconds))
+        dimsretained = 0
+        best_threshold = np.array([])
+        return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
 
     if mag_mode == 0:  # Contiguous from left
         if len(surv_idx) == 0:
