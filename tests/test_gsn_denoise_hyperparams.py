@@ -30,6 +30,9 @@ MAG_TYPES = [0, 1]  # 0 for eigenvalue-based, 1 for variance-based
 # Magnitude thresholding modes
 MAG_MODES = [0, 1]  # 0 for contiguous, 1 for all that survive
 
+# Magnitude fraction values to test
+MAG_FRACS = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
+
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 @pytest.mark.parametrize("V", V_VALUES)
 def test_basis_selection_modes(data_shape, V):
@@ -39,16 +42,16 @@ def test_basis_selection_modes(data_shape, V):
     
     # Test with population thresholding
     opt = {'cv_threshold_per': 'population'}
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, V=V, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert isinstance(best_threshold, (int, np.integer))
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, V=V, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert isinstance(results['best_threshold'], (int, np.integer))
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 def test_custom_basis(data_shape):
@@ -65,15 +68,15 @@ def test_custom_basis(data_shape):
         
         # Test with population thresholding
         opt = {'cv_threshold_per': 'population'}
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, V=V, opt=opt)
-        assert denoiser.shape == (nunits, nunits)
-        assert denoiseddata.shape == (nunits, nconds)
-        assert isinstance(best_threshold, (int, np.integer))
-        assert fullbasis.shape == V.shape  # Basis should match input dimensions
-        assert signalsubspace.shape[0] == nunits
-        assert signalsubspace.shape[1] <= dim  # Can't use more dimensions than provided
-        assert dimreduce.shape[0] == signalsubspace.shape[1]
-        assert dimreduce.shape[1] == nconds
+        results = gsn_denoise(data, V=V, opt=opt)
+        assert results['denoiser'].shape == (nunits, nunits)
+        assert results['denoiseddata'].shape == (nunits, nconds)
+        assert isinstance(results['best_threshold'], (int, np.integer))
+        assert results['fullbasis'].shape == V.shape  # Basis should match input dimensions
+        assert results['signalsubspace'].shape[0] == nunits
+        assert results['signalsubspace'].shape[1] <= dim  # Can't use more dimensions than provided
+        assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+        assert results['dimreduce'].shape[1] == nconds
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 @pytest.mark.parametrize("cv_mode", CV_MODES)
@@ -90,39 +93,38 @@ def test_cv_modes_and_thresholding(threshold_per, cv_mode, data_shape):
         'cv_scoring_fn': lambda A, B: -np.mean((A - B)**2)
     }
     
-    if cv_mode < 0:
-        # Magnitude thresholding mode
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, mags, dimsretained, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-        assert denoiser.shape == (nunits, nunits)
-        assert denoiseddata.shape == (nunits, nconds)
-        assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-        assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-        assert len(mags) == fullbasis.shape[1]  # One magnitude per basis dimension
-        assert isinstance(dimsretained, (int, np.integer))
-        assert signalsubspace.shape[0] == nunits
-        assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-        assert dimreduce.shape[0] == signalsubspace.shape[1]
-        assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, opt=opt)
+    
+    # Common assertions for all modes
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['fullbasis'].shape[0] == nunits
+    assert results['fullbasis'].shape[1] >= 1
+    
+    # Check denoiseddata shape based on denoisingtype
+    if 'denoisingtype' in opt and opt['denoisingtype'] == 1:
+        assert results['denoiseddata'].shape == (nunits, nconds, ntrials)
     else:
+        assert results['denoiseddata'].shape[:2] == (nunits, nconds)
+    
+    if cv_mode < 0:  # Magnitude thresholding mode
+        assert results['mags'] is not None
+        assert results['dimsretained'] is not None
+        assert results['signalsubspace'] is not None
+        assert results['dimreduce'] is not None
+        assert len(results['mags']) == nunits
+        assert isinstance(results['dimsretained'], (int, np.integer))
+        assert results['signalsubspace'].shape[0] == nunits
+        assert results['dimreduce'].shape[1] == nconds
+    else:  # Cross-validation mode
         if threshold_per == 'population':
-            denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-            assert denoiser.shape == (nunits, nunits)
-            assert denoiseddata.shape == (nunits, nconds)
-            assert isinstance(best_threshold, (int, np.integer))
-            assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-            assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-            assert signalsubspace.shape[0] == nunits
-            assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-            assert dimreduce.shape[0] == signalsubspace.shape[1]
-            assert dimreduce.shape[1] == nconds
+            assert results['signalsubspace'] is not None
+            assert results['dimreduce'] is not None
+            assert results['signalsubspace'].shape[0] == nunits
+            assert results['dimreduce'].shape[1] == nconds
+            assert isinstance(results['best_threshold'], (int, np.integer))
         else:  # 'unit'
-            denoiser, cv_scores, best_threshold, denoiseddata, fullbasis = gsn_denoise(data, opt=opt)
-            assert denoiser.shape == (nunits, nunits)
-            assert denoiseddata.shape == (nunits, nconds)
-            assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-            assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-            assert len(best_threshold) == nunits  # Unit-wise thresholds
-            assert cv_scores.shape[0] == nunits  # One score per unit
+            assert len(results['best_threshold']) == nunits
+            assert results['cv_scores'].shape[0] == nunits
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 @pytest.mark.parametrize("mag_type", MAG_TYPES)
@@ -137,17 +139,17 @@ def test_magnitude_thresholding_options(mag_type, mag_mode, data_shape):
         'mag_mode': mag_mode,
         'mag_frac': 0.5  # Mid-range threshold
     }
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, mags, dimsretained, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert len(mags) == fullbasis.shape[1]  # One magnitude per basis dimension
-    assert isinstance(dimsretained, (int, np.integer))
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+    assert isinstance(results['dimsretained'], (int, np.integer))
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 def test_custom_scoring_functions(data_shape):
@@ -169,12 +171,12 @@ def test_custom_scoring_functions(data_shape):
             'cv_threshold_per': 'unit',
             'cv_scoring_fn': scoring_fn
         }
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis = gsn_denoise(data, opt=opt)
-        assert denoiser.shape == (nunits, nunits)
-        assert denoiseddata.shape == (nunits, nconds)
-        assert fullbasis.shape == (nunits, nunits)  # Full basis should be square
-        assert len(best_threshold) == nunits  # Unit-wise thresholds
-        assert cv_scores.shape[0] == nunits  # One score per unit
+        results = gsn_denoise(data, opt=opt)
+        assert results['denoiser'].shape == (nunits, nunits)
+        assert results['denoiseddata'].shape == (nunits, nconds)
+        assert results['fullbasis'].shape == (nunits, nunits)  # Full basis should be square
+        assert len(results['best_threshold']) == nunits  # Unit-wise thresholds
+        assert results['cv_scores'].shape[0] == nunits  # One score per unit
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 def test_cv_thresholds_variations(data_shape):
@@ -204,15 +206,15 @@ def test_cv_thresholds_variations(data_shape):
             'cv_threshold_per': 'population',
             'cv_thresholds': thresholds
         }
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-        assert denoiser.shape == (nunits, nunits)
-        assert denoiseddata.shape == (nunits, nconds)
-        assert isinstance(best_threshold, (int, np.integer))
-        assert fullbasis.shape == (nunits, nunits)  # Full basis should be square
-        assert signalsubspace.shape == (nunits, best_threshold)
-        assert dimreduce.shape == (best_threshold, nconds)
+        results = gsn_denoise(data, opt=opt)
+        assert results['denoiser'].shape == (nunits, nunits)
+        assert results['denoiseddata'].shape == (nunits, nconds)
+        assert isinstance(results['best_threshold'], (int, np.integer))
+        assert results['fullbasis'].shape == (nunits, nunits)  # Full basis should be square
+        assert results['signalsubspace'].shape == (nunits, results['best_threshold'])
+        assert results['dimreduce'].shape == (results['best_threshold'], nconds)
         # Check symmetry for population thresholding
-        assert np.allclose(denoiser, denoiser.T)
+        assert np.allclose(results['denoiser'], results['denoiser'].T)
 
 @pytest.mark.parametrize("data_shape", DATA_SHAPES)
 def test_edge_case_combinations(data_shape):
@@ -233,40 +235,38 @@ def test_edge_case_combinations(data_shape):
     ]
     
     for opt in edge_cases:
+        results = gsn_denoise(data, opt=opt)
         if opt['cv_mode'] < 0:
             # Magnitude thresholding mode
-            denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, mags, dimsretained, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-            assert denoiser.shape == (nunits, nunits)
-            assert denoiseddata.shape == (nunits, nconds)
-            assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-            assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-            assert len(mags) == fullbasis.shape[1]  # One magnitude per basis dimension
-            assert isinstance(dimsretained, (int, np.integer))
-            assert signalsubspace.shape[0] == nunits
-            assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-            assert dimreduce.shape[0] == signalsubspace.shape[1]
-            assert dimreduce.shape[1] == nconds
+            assert results['denoiser'].shape == (nunits, nunits)
+            assert results['denoiseddata'].shape == (nunits, nconds)
+            assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+            assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+            assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+            assert isinstance(results['dimsretained'], (int, np.integer))
+            assert results['signalsubspace'].shape[0] == nunits
+            assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+            assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+            assert results['dimreduce'].shape[1] == nconds
         else:
             # Cross-validation mode
             if opt.get('cv_threshold_per') == 'population':
-                denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-                assert denoiser.shape == (nunits, nunits)
-                assert denoiseddata.shape == (nunits, nconds)
-                assert isinstance(best_threshold, (int, np.integer))
-                assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-                assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-                assert signalsubspace.shape[0] == nunits
-                assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-                assert dimreduce.shape[0] == signalsubspace.shape[1]
-                assert dimreduce.shape[1] == nconds
+                assert results['denoiser'].shape == (nunits, nunits)
+                assert results['denoiseddata'].shape == (nunits, nconds)
+                assert isinstance(results['best_threshold'], (int, np.integer))
+                assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+                assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+                assert results['signalsubspace'].shape[0] == nunits
+                assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+                assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+                assert results['dimreduce'].shape[1] == nconds
             else:  # 'unit'
-                denoiser, cv_scores, best_threshold, denoiseddata, fullbasis = gsn_denoise(data, opt=opt)
-                assert denoiser.shape == (nunits, nunits)
-                assert denoiseddata.shape == (nunits, nconds)
-                assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-                assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-                assert len(best_threshold) == nunits  # Unit-wise thresholds
-                assert cv_scores.shape[0] == nunits  # One score per unit
+                assert results['denoiser'].shape == (nunits, nunits)
+                assert results['denoiseddata'].shape == (nunits, nconds)
+                assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+                assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+                assert len(results['best_threshold']) == nunits  # Unit-wise thresholds
+                assert results['cv_scores'].shape[0] == nunits  # One score per unit
 
 def test_parameter_validation():
     """Test parameter validation and error handling."""
@@ -316,16 +316,16 @@ def test_basis_functionality():
     
     # Test with V=4 (random orthonormal basis)
     opt = {'cv_threshold_per': 'population'}  # Use population thresholding
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, V=4, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert isinstance(best_threshold, (int, np.integer))
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, V=4, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert isinstance(results['best_threshold'], (int, np.integer))
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 def test_identity_basis():
     """Test with identity basis."""
@@ -334,16 +334,16 @@ def test_identity_basis():
     
     # Test with V=None (identity basis)
     opt = {'cv_threshold_per': 'population'}  # Use population thresholding
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, V=None, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert isinstance(best_threshold, (int, np.integer))
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, V=None, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert isinstance(results['best_threshold'], (int, np.integer))
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 def test_cv_mode_0():
     """Test cross-validation with cv_mode=0 (leave-one-out)."""
@@ -355,16 +355,16 @@ def test_cv_mode_0():
         'cv_thresholds': np.arange(1, nunits + 1),
         'cv_scoring_fn': lambda A, B: -np.mean((A - B)**2)
     }
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert isinstance(best_threshold, (int, np.integer))
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert isinstance(results['best_threshold'], (int, np.integer))
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 def test_cv_mode_1():
     """Test cross-validation with cv_mode=1 (1/n-1 split)."""
@@ -376,16 +376,16 @@ def test_cv_mode_1():
         'cv_thresholds': np.arange(1, nunits + 1),
         'cv_scoring_fn': lambda A, B: -np.mean((A - B)**2)
     }
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert isinstance(best_threshold, (int, np.integer))
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert isinstance(results['best_threshold'], (int, np.integer))
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
 
 def test_cv_mode_minus1():
     """Test cross-validation with cv_mode=-1 (magnitude thresholding)."""
@@ -397,14 +397,160 @@ def test_cv_mode_minus1():
         'cv_thresholds': np.arange(1, nunits + 1),
         'cv_scoring_fn': lambda A, B: -np.mean((A - B)**2)
     }
-    denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, mags, dimsretained, signalsubspace, dimreduce = gsn_denoise(data, opt=opt)
-    assert denoiser.shape == (nunits, nunits)
-    assert denoiseddata.shape == (nunits, nconds)
-    assert fullbasis.shape[0] == nunits  # Basis should have nunits rows
-    assert fullbasis.shape[1] >= 1  # Basis should have at least 1 column
-    assert len(mags) == fullbasis.shape[1]  # One magnitude per basis dimension
-    assert isinstance(dimsretained, (int, np.integer))
-    assert signalsubspace.shape[0] == nunits
-    assert signalsubspace.shape[1] <= fullbasis.shape[1]  # Can't use more dimensions than available
-    assert dimreduce.shape[0] == signalsubspace.shape[1]
-    assert dimreduce.shape[1] == nconds 
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+    assert isinstance(results['dimsretained'], (int, np.integer))
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds 
+
+@pytest.mark.parametrize("data_shape", DATA_SHAPES)
+@pytest.mark.parametrize("mag_frac", MAG_FRACS)
+def test_magnitude_fractions(data_shape, mag_frac):
+    """Test different magnitude fraction values."""
+    nunits, nconds, ntrials = data_shape
+    data = np.random.randn(nunits, nconds, ntrials)
+    
+    # Test with eigenvalue-based magnitude thresholding
+    opt = {
+        'cv_mode': -1,  # Use magnitude thresholding
+        'mag_type': 0,  # Eigenvalue-based
+        'mag_mode': 0,  # Contiguous
+        'mag_frac': mag_frac
+    }
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+    assert isinstance(results['dimsretained'], (int, np.integer))
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
+    
+    # For extreme mag_frac values, check expected behavior
+    if mag_frac == 0.0:
+        # Should retain all dimensions
+        assert results['dimsretained'] == results['fullbasis'].shape[1]
+    elif mag_frac == 1.0:
+        # Should retain at most one dimension
+        assert results['dimsretained'] <= 1
+        if results['dimsretained'] == 0:
+            assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
+            assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
+    else:
+        # Should retain some dimensions, but might retain all if the data requires it
+        assert 0 < results['dimsretained'] <= results['fullbasis'].shape[1]
+    
+    # Test with variance-based magnitude thresholding
+    opt = {
+        'cv_mode': -1,  # Use magnitude thresholding
+        'mag_type': 1,  # Variance-based
+        'mag_mode': 0,  # Contiguous
+        'mag_frac': mag_frac
+    }
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+    assert isinstance(results['dimsretained'], (int, np.integer))
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
+    
+    # For extreme mag_frac values, check expected behavior
+    if mag_frac == 0.0:
+        # Should retain all dimensions
+        assert results['dimsretained'] == results['fullbasis'].shape[1]
+    elif mag_frac == 1.0:
+        # Should retain at most one dimension
+        assert results['dimsretained'] <= 1
+        if results['dimsretained'] == 0:
+            assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
+            assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
+    else:
+        # Should retain some dimensions, but might retain all if the data requires it
+        assert 0 < results['dimsretained'] <= results['fullbasis'].shape[1]
+    
+    # Test with non-contiguous mode
+    opt = {
+        'cv_mode': -1,  # Use magnitude thresholding
+        'mag_type': 0,  # Eigenvalue-based
+        'mag_mode': 1,  # Non-contiguous
+        'mag_frac': mag_frac
+    }
+    results = gsn_denoise(data, opt=opt)
+    assert results['denoiser'].shape == (nunits, nunits)
+    assert results['denoiseddata'].shape == (nunits, nconds)
+    assert results['fullbasis'].shape[0] == nunits  # Basis should have nunits rows
+    assert results['fullbasis'].shape[1] >= 1  # Basis should have at least 1 column
+    assert len(results['mags']) == results['fullbasis'].shape[1]  # One magnitude per basis dimension
+    assert isinstance(results['dimsretained'], (int, np.integer))
+    assert results['signalsubspace'].shape[0] == nunits
+    assert results['signalsubspace'].shape[1] <= results['fullbasis'].shape[1]  # Can't use more dimensions than available
+    assert results['dimreduce'].shape[0] == results['signalsubspace'].shape[1]
+    assert results['dimreduce'].shape[1] == nconds
+    
+    # For extreme mag_frac values, check expected behavior
+    if mag_frac == 0.0:
+        # Should retain all dimensions
+        assert results['dimsretained'] == results['fullbasis'].shape[1]
+    elif mag_frac == 1.0:
+        # Should retain at most one dimension
+        assert results['dimsretained'] <= 1
+        if results['dimsretained'] == 0:
+            assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
+            assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
+    else:
+        # Should retain some dimensions, but might retain all if the data requires it
+        assert 0 < results['dimsretained'] <= results['fullbasis'].shape[1]
+
+@pytest.mark.parametrize("data_shape", DATA_SHAPES)
+def test_magnitude_fraction_monotonicity(data_shape):
+    """Test that increasing mag_frac leads to monotonically decreasing dimensions retained."""
+    nunits, nconds, ntrials = data_shape
+    data = np.random.randn(nunits, nconds, ntrials)
+
+    # Test with eigenvalue-based magnitude thresholding
+    prev_dims = float('inf')
+    prev_mag_frac = 0.0
+    for mag_frac in sorted(MAG_FRACS):
+        opt = {
+            'cv_mode': -1,  # Use magnitude thresholding
+            'mag_type': 0,  # Eigenvalue-based
+            'mag_mode': 1,  # Non-contiguous (test strict monotonicity)
+            'mag_frac': mag_frac
+        }
+        results = gsn_denoise(data, opt=opt)
+        # For non-contiguous mode, require strict monotonicity
+        if mag_frac > prev_mag_frac:
+            assert results['dimsretained'] <= prev_dims, f"Dimensions increased from {prev_dims} to {results['dimsretained']} when mag_frac increased from {prev_mag_frac} to {mag_frac}"
+        prev_dims = results['dimsretained']
+        prev_mag_frac = mag_frac
+
+    # Test with variance-based magnitude thresholding
+    prev_dims = float('inf')
+    prev_mag_frac = 0.0
+    for mag_frac in sorted(MAG_FRACS):
+        opt = {
+            'cv_mode': -1,  # Use magnitude thresholding
+            'mag_type': 1,  # Variance-based
+            'mag_mode': 1,  # Non-contiguous (test strict monotonicity)
+            'mag_frac': mag_frac
+        }
+        results = gsn_denoise(data, opt=opt)
+        # For non-contiguous mode, require strict monotonicity
+        if mag_frac > prev_mag_frac:
+            assert results['dimsretained'] <= prev_dims, f"Dimensions increased from {prev_dims} to {results['dimsretained']} when mag_frac increased from {prev_mag_frac} to {mag_frac}"
+        prev_dims = results['dimsretained']
+        prev_mag_frac = mag_frac 
