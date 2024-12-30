@@ -323,9 +323,15 @@ def perform_cross_validation(data, basis, opt):
             best_thresh_unitwise.append(thresholds[best_idx])
         best_thresh_unitwise = np.array(best_thresh_unitwise)
         best_threshold = best_thresh_unitwise
-        max_thr = int(np.max(best_threshold))
-        safe_thr = min(max_thr, basis.shape[1])
-        denoiser = basis[:, :safe_thr] @ basis[:, :safe_thr].T
+        
+        # Construct unit-wise denoiser
+        denoiser = np.zeros((nunits, nunits))
+        for unit_i in range(nunits):
+            # For each unit, create its own denoising vector using its threshold
+            safe_thr = min(int(best_threshold[unit_i]), basis.shape[1])
+            unit_denoiser = basis[:, :safe_thr] @ basis[:, :safe_thr].T
+            # Use the column corresponding to this unit
+            denoiser[:, unit_i] = unit_denoiser[:, unit_i]
 
     # Calculate denoiseddata based on denoisingtype
     if denoisingtype == 0:
@@ -431,40 +437,32 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     if len(surv_idx) == 0:
         # If no dimensions survive, return zero matrices
         denoiser = np.zeros((nunits, nunits))
-        denoiseddata = np.zeros((nunits, nconds))
+        denoiseddata = np.zeros((nunits, nconds)) if denoisingtype == 0 else np.zeros_like(data)
         signalsubspace = basis[:, :0]  # Empty but valid shape
-        dimreduce = np.zeros((0, nconds))
+        dimreduce = np.zeros((0, nconds)) if denoisingtype == 0 else np.zeros((0, nconds, ntrials))
         dimsretained = 0
         best_threshold = np.array([])
         return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
 
     if mag_mode == 0:  # Contiguous from left
-        if len(surv_idx) == 0:
+        # For contiguous from left, we want the leftmost block
+        # Find the first gap after the start
+        if len(surv_idx) == 1:
             dimsretained = 1
-            best_threshold = np.array([0])
-        else:
-            # For contiguous from left, we want the leftmost block
-            # Find the first gap after the start
-            if len(surv_idx) == 1:
-                dimsretained = 1
-                best_threshold = surv_idx
-            else:
-                # Take all dimensions up to the first gap
-                gaps = np.where(np.diff(surv_idx) > 1)[0]
-                if len(gaps) > 0:
-                    dimsretained = gaps[0] + 1
-                    best_threshold = surv_idx[:dimsretained]
-                else:
-                    # No gaps, take all surviving dimensions
-                    dimsretained = len(surv_idx)
-                    best_threshold = surv_idx
-    else:  # Keep all dimensions above threshold
-        if len(surv_idx) == 0:
-            dimsretained = 1
-            best_threshold = np.array([0])
-        else:
-            dimsretained = len(surv_idx)
             best_threshold = surv_idx
+        else:
+            # Take all dimensions up to the first gap
+            gaps = np.where(np.diff(surv_idx) > 1)[0]
+            if len(gaps) > 0:
+                dimsretained = gaps[0] + 1
+                best_threshold = surv_idx[:dimsretained]
+            else:
+                # No gaps, take all surviving dimensions
+                dimsretained = len(surv_idx)
+                best_threshold = surv_idx
+    else:  # Keep all dimensions above threshold
+        dimsretained = len(surv_idx)
+        best_threshold = surv_idx
 
     # Create denoising matrix using retained dimensions
     denoising_fn = np.zeros(basis.shape[1])
