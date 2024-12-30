@@ -3,7 +3,6 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
-import pytest
 from gsn.gsn_denoise import gsn_denoise
 
 def test_nearly_singular_data():

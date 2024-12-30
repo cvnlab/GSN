@@ -5,9 +5,7 @@ sys.path.insert(0, os.path.abspath("/Users/jacobprince/KonkLab Dropbox/Jacob Pri
 
 import numpy as np
 import pytest
-from gsn.simulate_data import generate_data
-from gsn.gsn_denoise import gsn_denoise, perform_cross_validation, perform_magnitude_thresholding
-from gsn.perform_gsn import perform_gsn
+from gsn.gsn_denoise import gsn_denoise
 
 def test_basic_functionality():
     """Test basic functionality of gsn_denoise."""

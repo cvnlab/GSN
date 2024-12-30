@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from gsn.gsn_denoise import gsn_denoise
 
 def test_unit_mode_basic():
