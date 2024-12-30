@@ -1,69 +1,204 @@
 import numpy as np
 from gsn.perform_gsn import perform_gsn
-from gsn.calc_cod import calc_cod
-from gsn.utilities import zerodiv
-from gsn.convert_covariance_to_correlation import convert_covariance_to_correlation
 
 def gsn_denoise(data, V=None, opt=None):
-    """
-    Main entry point for denoising.
+    """Denoise neural data using Generative Modeling of Signal and Noise (GSN) denoising.
+    
+    This function implements GSN denoising, which uses cross-validation or magnitude thresholding
+    to identify and remove noise dimensions while preserving signal dimensions. The algorithm:
+    
+    1. Computes signal and noise covariance matrices from the data
+    2. Selects a basis for denoising (several options available)
+    3. Uses either cross-validation or magnitude thresholding to determine which dimensions to retain
+    4. Constructs a denoising matrix that projects data onto the retained dimensions
+    
+    The denoising can be performed either:
+    - On trial-averaged data (default)
+    - On single trials
+    - Using population-level thresholding (same dimensions for all units)
+    - Using unit-wise thresholding (different dimensions for each unit)
+    
+    Algorithm Details:
+    -----------------
+    The GSN denoising algorithm works by identifying dimensions in the neural data that contain
+    primarily signal rather than noise. It does this in several steps:
+
+    1. Signal and Noise Estimation:
+        - For each condition, computes mean response across trials (signal estimate)
+        - For each condition, computes variance across trials (noise estimate)
+        - Builds signal (cSb) and noise (cNb) covariance matrices across conditions
+    
+    2. Basis Selection (V parameter):
+        - V=0: Uses eigenvectors of signal covariance (cSb)
+        - V=1: Uses eigenvectors of signal covariance transformed by inverse noise covariance
+        - V=2: Uses eigenvectors of noise covariance (cNb)
+        - V=3: Uses PCA on trial-averaged data
+        - V=4: Uses random orthonormal basis
+        - V=matrix: Uses user-supplied orthonormal basis
+    
+    3. Dimension Selection:
+        The algorithm must decide how many dimensions to keep. This can be done in two ways:
+
+        a) Cross-validation (cv_mode >= 0):
+            - Splits trials into training and testing sets
+            - For training set:
+                * Projects data onto different numbers of basis dimensions
+                * Creates denoising matrix for each dimensionality
+            - For test set:
+                * Measures how well denoised training data predicts test data
+                * Uses mean squared error (MSE) as prediction metric
+            - Selects number of dimensions that gives best prediction
+            - Can be done per-unit or for whole population
+        
+        b) Magnitude Thresholding (cv_mode < 0):
+            - Computes "magnitude" for each dimension:
+                * Either eigenvalues (signal strength)
+                * Or variance explained in the data
+            - Sets threshold as fraction of maximum magnitude
+            - Keeps dimensions above threshold either:
+                * Contiguously from strongest dimension
+                * Or any dimension above threshold
+    
+    4. Denoising:
+        - Creates denoising matrix using selected dimensions
+        - For trial-averaged denoising:
+            * Averages data across trials
+            * Projects through denoising matrix
+        - For single-trial denoising:
+            * Projects each trial through denoising matrix
+        - Returns denoised data and diagnostic information
+    
+    The algorithm is particularly effective because:
+    - It adapts to the structure of both signal and noise in the data
+    - It can handle different types of neural response patterns
+    - It allows for different denoising strategies (population vs unit-wise)
+    - It provides cross-validation to prevent overfitting
+    - It can denoise both trial-averaged and single-trial data
     
     Args:
-        data: shape (nunits, nconds, ntrials)
-            The measured responses to different conditions on distinct trials.
-            The number of trials must be at least 2 in some scenarios.
-        V: basis selection mode or basis matrix
-            0 means perform GSN and use eigenvectors of signal covariance (cSb)
-            1 means perform GSN and use eigenvectors of signal covariance transformed by inverse noise covariance
-            2 means perform GSN and use eigenvectors of noise covariance (cNb)
-            3 means naive PCA (eigenvectors of trial-averaged data covariance)
-            4 means use randomly generated orthonormal basis
-            B means use user-supplied basis B (nunits x D where D >= 1, columns unit-length and orthogonal)
-            Default: 0
-        opt: dict with optional fields
-            cv_mode: int
-                0 means cross-validation using n-1 (train) / 1 (test) splits
-                1 means cross-validation using 1 (train) / n-1 (test) splits
-                -1 means magnitude thresholding based on component magnitudes
-                Default: 0
-            cv_threshold_per: str
-                'population' or 'unit', specifying whether to use unit-wise or population thresholding
-                Default: 'unit'
-            cv_thresholds: array
-                Thresholds to evaluate in cross-validation (positive integers)
-                Default: 1:D where D is maximum dimensions
-            cv_scoring_fn: callable
-                Function to compute denoiser performance
-                Default: negative_mse_columns
-            mag_type: int
-                0 means use eigenvalues (V must be 0,1,2,3)
-                1 means use signal variance from data
-                Default: 0
-            mag_frac: float
-                Fraction of maximum magnitude for thresholding
+        data: ndarray, shape (nunits, nconds, ntrials)
+            Neural responses with dimensions:
+            - nunits: number of units/neurons
+            - nconds: number of conditions/stimuli
+            - ntrials: number of repeated measurements
+            Must have at least 2 trials and 2 conditions.
+        
+        V: int or ndarray, optional
+            Basis selection mode (0,1,2,3,4) or custom basis matrix.
+            If matrix: shape (nunits, D) with D >= 1, orthonormal columns.
+            Default: 0 (signal covariance eigenvectors)
+        
+        opt: dict, optional
+            Dictionary of options with fields:
+            
+            Cross-validation options:
+            - cv_mode: int
+                0: n-1 train / 1 test split (default)
+                1: 1 train / n-1 test split
+                -1: use magnitude thresholding instead
+            - cv_threshold_per: str
+                'unit': different thresholds per unit (default)
+                'population': same threshold for all units
+            - cv_thresholds: array
+                Dimensions to test in cross-validation
+                Default: 1 to nunits
+            - cv_scoring_fn: callable
+                Function to compute prediction error
+                Default: negative mean squared error per unit
+            
+            Magnitude thresholding options:
+            - mag_type: int
+                0: use eigenvalues (default)
+                1: use variances
+            - mag_frac: float
+                Fraction of maximum magnitude for threshold
                 Default: 0.01
-            mag_mode: int
-                0 means use smallest number of contiguous dimensions from left
-                1 means use all dimensions that survive threshold
-                Default: 0
-            denoisingtype: int
-                0 means trial-averaged denoising
-                1 means single-trial denoising
-                Default: 0
-
+            - mag_mode: int
+                0: use contiguous dimensions from left (default)
+                1: use all dimensions above threshold
+            
+            General options:
+            - denoisingtype: int
+                0: trial-averaged denoising (default)
+                1: single-trial denoising
+    
     Returns:
         dict with fields:
-            denoiser: (nunits x nunits) denoising matrix
-            cv_scores: (length(cv_thresholds) x ntrials x nunits) CV performance scores
-            best_threshold: scalar or array indicating optimal threshold(s)
-            denoiseddata: 
-                If denoisingtype=0: (nunits x nconds) trial-averaged denoised data
-                If denoisingtype=1: (nunits x nconds x ntrials) single-trial denoised data
-            fullbasis: (nunits x dims) full basis matrix
-            signalsubspace: (nunits x dims) final basis functions for denoising, or None
-            dimreduce: (dims x nconds) or (dims x nconds x ntrials) reduced dimension data, or None
-            mags: array of component magnitudes, or None
-            dimsretained: scalar integer indicating number of dimensions retained, or None
+            denoiser: ndarray, shape (nunits, nunits)
+                Matrix that projects data onto denoised space
+            
+            cv_scores: ndarray
+                Cross-validation scores for each threshold
+                Shape depends on cv_mode and cv_threshold_per
+            
+            best_threshold: int or ndarray
+                Selected threshold(s)
+                Scalar for population mode
+                Array of length nunits for unit mode
+            
+            denoiseddata: ndarray
+                Denoised neural responses
+                Shape (nunits, nconds) for trial-averaged
+                Shape (nunits, nconds, ntrials) for single-trial
+            
+            fullbasis: ndarray, shape (nunits, dims)
+                Complete basis used for denoising
+            
+            signalsubspace: ndarray or None
+                Final basis functions used for denoising
+                None for unit-wise mode
+            
+            dimreduce: ndarray or None
+                Data projected onto signal subspace
+                None for unit-wise mode
+            
+            mags: ndarray or None
+                Component magnitudes (for magnitude thresholding)
+            
+            dimsretained: int or None
+                Number of dimensions retained (for magnitude thresholding)
+    
+    Examples:
+    --------
+    Basic usage with default options:
+    >>> data = np.random.randn(10, 20, 5)  # 10 units, 20 conditions, 5 trials
+    >>> results = gsn_denoise(data)
+    >>> denoised = results['denoiseddata']  # Get denoised data
+    
+    Using magnitude thresholding:
+    >>> opt = {
+    ...     'cv_mode': -1,  # Use magnitude thresholding
+    ...     'mag_frac': 0.1,  # Keep components > 10% of max
+    ...     'mag_mode': 0  # Use contiguous dimensions
+    ... }
+    >>> results = gsn_denoise(data, V=0, opt=opt)
+    
+    Unit-wise cross-validation:
+    >>> opt = {
+    ...     'cv_mode': 0,  # Leave-one-out CV
+    ...     'cv_threshold_per': 'unit',  # Unit-specific thresholds
+    ...     'cv_thresholds': [1, 2, 3]  # Test these dimensions
+    ... }
+    >>> results = gsn_denoise(data, V=0, opt=opt)
+    
+    Single-trial denoising:
+    >>> opt = {
+    ...     'denoisingtype': 1,  # Single-trial mode
+    ...     'cv_threshold_per': 'population'  # Same dims for all units
+    ... }
+    >>> results = gsn_denoise(data, V=0, opt=opt)
+    >>> denoised_trials = results['denoiseddata']  # (nunits, nconds, ntrials)
+    
+    Custom basis:
+    >>> nunits = data.shape[0]
+    >>> custom_basis = np.linalg.qr(np.random.randn(nunits, nunits))[0]
+    >>> results = gsn_denoise(data, V=custom_basis)
+    
+    See Also:
+    --------
+    perform_gsn : Computes signal and noise covariance matrices
+    perform_cross_validation : Implements cross-validation for dimension selection
+    perform_magnitude_thresholding : Implements magnitude-based dimension selection
     """
 
     # 1) Check for infinite or NaN data => some tests want an AssertionError.
@@ -239,12 +374,120 @@ def gsn_denoise(data, V=None, opt=None):
     return results
 
 def perform_cross_validation(data, basis, opt):
-    """Perform cross-validation to find optimal threshold.
+    """Perform cross-validation to determine optimal number of dimensions for denoising.
     
-    cv_mode options:
-    0: Denoise the average of n-1 trials, test against held out trial
-    1: Denoise single trial, test against average of n-1 trials
-    -1: No cross-validation, use magnitude thresholding instead
+    This function implements leave-one-out or leave-n-out cross-validation to find
+    the optimal number of dimensions to retain for denoising. It works by:
+    1. Splitting data into training and test sets
+    2. Creating denoising matrices with different numbers of dimensions
+    3. Evaluating how well each denoiser predicts held-out data
+    4. Selecting the dimensionality that gives best predictions
+    
+    Algorithm Details:
+    -----------------
+    1. Data Splitting:
+        - cv_mode=0 (leave-one-out):
+            * Training: Average of n-1 trials
+            * Testing: Single held-out trial
+        - cv_mode=1 (leave-n-out):
+            * Training: Single trial
+            * Testing: Average of n-1 trials
+    
+    2. Denoiser Construction:
+        - For each candidate threshold:
+            * Takes first k dimensions from basis
+            * Creates projection matrix onto those dimensions
+            * Applies to training data
+            * Compares with test data
+    
+    3. Score Computation:
+        - Population mode:
+            * Averages scores across all units
+            * Selects single best threshold
+            * Creates one denoiser for all units
+        - Unit mode:
+            * Keeps separate scores for each unit
+            * Selects best threshold per unit
+            * Creates unit-specific denoisers
+    
+    Args:
+        data: ndarray, shape (nunits, nconds, ntrials)
+            Neural response data to denoise
+        
+        basis: ndarray, shape (nunits, dims)
+            Orthonormal basis for denoising
+            Usually eigenvectors of some covariance matrix
+        
+        opt: dict
+            Dictionary of options with fields:
+            - cv_mode: int
+                0: n-1 train / 1 test split
+                1: 1 train / n-1 test split
+            - cv_threshold_per: str
+                'unit' or 'population'
+            - cv_thresholds: array
+                Dimensions to test
+            - cv_scoring_fn: callable
+                Function to compute prediction error
+            - denoisingtype: int
+                0: trial-averaged, 1: single-trial
+    
+    Returns:
+        denoiser: ndarray, shape (nunits, nunits)
+            Matrix that projects data onto denoised space
+        
+        cv_scores: ndarray, shape (len(thresholds), ntrials, nunits)
+            Cross-validation scores for each threshold/trial/unit
+        
+        best_threshold: int or ndarray
+            Selected threshold(s)
+            Scalar for population mode
+            Array of length nunits for unit mode
+        
+        denoiseddata: ndarray
+            Denoised neural responses
+            Shape (nunits, nconds) for trial-averaged
+            Shape (nunits, nconds, ntrials) for single-trial
+        
+        fullbasis: ndarray, shape (nunits, dims)
+            Complete basis used for denoising
+        
+        signalsubspace: ndarray or None
+            Final basis functions used for denoising
+            None for unit-wise mode
+        
+        dimreduce: ndarray or None
+            Data projected onto signal subspace
+            None for unit-wise mode
+    
+    Examples:
+    --------
+    Population-level cross-validation:
+    >>> data = np.random.randn(10, 20, 5)  # 10 units, 20 conditions, 5 trials
+    >>> basis = np.eye(10)  # Identity basis for example
+    >>> opt = {
+    ...     'cv_mode': 0,
+    ...     'cv_threshold_per': 'population',
+    ...     'cv_thresholds': [1, 2, 3],
+    ...     'denoisingtype': 0
+    ... }
+    >>> denoiser, scores, thresh, denoised, _, _, _ = perform_cross_validation(data, basis, opt)
+    
+    Unit-wise cross-validation:
+    >>> opt['cv_threshold_per'] = 'unit'
+    >>> denoiser, scores, thresholds, denoised, _, _, _ = perform_cross_validation(data, basis, opt)
+    >>> print(f"Each unit got its own threshold: {thresholds}")
+    
+    Single-trial denoising:
+    >>> opt.update({'denoisingtype': 1, 'cv_mode': 1})
+    >>> denoiser, scores, thresh, denoised, _, _, _ = perform_cross_validation(data, basis, opt)
+    >>> print(f"Denoised data shape: {denoised.shape}")  # (10, 20, 5)
+    
+    See Also:
+    --------
+    gsn_denoise : Main denoising function
+    perform_magnitude_thresholding : Alternative to cross-validation
+    negative_mse_columns : Default scoring function
     """
     nunits, nconds, ntrials = data.shape
     cv_mode = opt['cv_mode']
@@ -256,24 +499,6 @@ def perform_cross_validation(data, basis, opt):
     
     # Initialize cv_scores
     cv_scores = np.zeros((len(thresholds), ntrials, nunits))
-
-    if cv_mode == -1:
-        # No cross-validation - use magnitude thresholding
-        data_ctv = data.copy().transpose(1, 2, 0)  # (nconds, ntrials, nunits)
-        ncsnrs = np.zeros(nunits)
-        for i in range(data_ctv.shape[2]):
-            this_eigv = basis[:, i]
-            proj_data = np.dot(data_ctv, this_eigv)
-            _, ncsnr, _, _ = compute_noise_ceiling(proj_data[np.newaxis, ...])
-            ncsnrs[i] = ncsnr
-
-        # Find first index where SNR hits 0
-        if np.sum(ncsnrs == 0) == 0:
-            raise ValueError('Basis SNR never hits 0. Adjust cross-validation settings.')
-        best_threshold = np.argwhere(ncsnrs == 0)[0, 0]
-        denoising_fn = np.concatenate([np.ones(best_threshold), np.zeros(basis.shape[1] - best_threshold)])
-        denoiser = basis @ np.diag(denoising_fn) @ basis.T
-        return denoiser, cv_scores, best_threshold, None, basis, None, None
 
     for tr in range(ntrials):
         # Define cross-validation splits based on cv_mode
@@ -346,43 +571,152 @@ def perform_cross_validation(data, basis, opt):
 
     # Calculate additional return values
     fullbasis = basis.copy()
-    signalsubspace = basis[:, :safe_thr]
-    
-    # Project data onto signal subspace
-    if denoisingtype == 0:
-        trial_avg = np.mean(data, axis=2)
-        dimreduce = signalsubspace.T @ trial_avg  # (safe_thr, nconds)
-    else:
-        dimreduce = np.zeros((safe_thr, nconds, ntrials))
-        for t in range(ntrials):
-            dimreduce[:, :, t] = signalsubspace.T @ data[:, :, t]
-
-    # Return values based on threshold_per
     if threshold_per == 'population':
-        return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce
-    else:  # 'unit'
-        return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, None, None
+        signalsubspace = basis[:, :safe_thr]
+        
+        # Project data onto signal subspace
+        if denoisingtype == 0:
+            trial_avg = np.mean(data, axis=2)
+            dimreduce = signalsubspace.T @ trial_avg  # (safe_thr, nconds)
+        else:
+            dimreduce = np.zeros((safe_thr, nconds, ntrials))
+            for t in range(ntrials):
+                dimreduce[:, :, t] = signalsubspace.T @ data[:, :, t]
+    else:
+        signalsubspace = None
+        dimreduce = None
+
+    return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce
 
 def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
-    """Perform magnitude thresholding to determine the optimal number of dimensions to retain.
-
+    """Determine dimensions to retain based on their magnitudes (eigenvalues or variances).
+    
+    This function implements magnitude-based dimension selection as an alternative to
+    cross-validation. It works by:
+    1. Computing magnitudes for each dimension (eigenvalues or variances)
+    2. Setting a threshold as a fraction of the maximum magnitude
+    3. Retaining dimensions above the threshold
+    4. Creating a denoiser using the retained dimensions
+    
+    Algorithm Details:
+    -----------------
+    1. Magnitude Computation (mag_type):
+        - mag_type=0 (eigenvalue-based):
+            * For V=0: Signal covariance eigenvalues
+            * For V=1: Signal-to-noise eigenvalues
+            * For V=2: Noise covariance eigenvalues
+            * For V=3: Trial-averaged covariance eigenvalues
+            * For V=4: All ones (random basis)
+            * For custom V: Projection variances
+        - mag_type=1 (variance-based):
+            * Projects data onto basis
+            * Computes variance in each dimension
+    
+    2. Threshold Selection:
+        - Sets threshold as mag_frac * max(magnitudes)
+        - Higher mag_frac means fewer dimensions retained
+        - mag_frac=1.0 retains at most one dimension
+        - mag_frac=0.0 retains all dimensions
+    
+    3. Dimension Selection (mag_mode):
+        - mag_mode=0 (contiguous):
+            * Keeps contiguous block from strongest dimension
+            * Stops at first gap in surviving dimensions
+            * Best for ordered bases (e.g., eigenvalues)
+        - mag_mode=1 (any):
+            * Keeps any dimension above threshold
+            * Order doesn't matter
+            * Best for custom bases
+    
     Args:
-        data: (nunits x nconds x ntrials) data array
-        basis: (nunits x dims) basis matrix
-        gsn_results: dictionary containing cSb and cNb matrices
-        opt: dictionary of options
-        V: basis selection mode (0..4) or custom matrix
-
+        data: ndarray, shape (nunits, nconds, ntrials)
+            Neural response data to denoise
+        
+        basis: ndarray, shape (nunits, dims)
+            Orthonormal basis for denoising
+        
+        gsn_results: dict
+            Results from perform_gsn containing:
+            - cSb: Signal covariance matrix
+            - cNb: Noise covariance matrix
+        
+        opt: dict
+            Dictionary of options with fields:
+            - mag_type: int
+                0: eigenvalue-based
+                1: variance-based
+            - mag_frac: float
+                Fraction of maximum magnitude for threshold
+            - mag_mode: int
+                0: contiguous from strongest
+                1: any above threshold
+            - denoisingtype: int
+                0: trial-averaged
+                1: single-trial
+        
+        V: int or ndarray
+            Basis selection mode (0-4) or custom basis
+    
     Returns:
-        denoiser: (nunits x nunits) denoising matrix
-        cv_scores: empty array (not used in magnitude thresholding)
-        best_threshold: scalar integer indicating number of dimensions retained
-        denoiseddata: (nunits x nconds) or (nunits x nconds x ntrials) denoised data
-        fullbasis: (nunits x dims) full basis matrix
-        signalsubspace: (nunits x dims) final set of basis functions
-        dimreduce: (dims x nconds) or (dims x nconds x ntrials) projected data
-        mags: array of component magnitudes
-        dimsretained: scalar integer indicating number of dimensions retained
+        denoiser: ndarray, shape (nunits, nunits)
+            Matrix that projects data onto denoised space
+        
+        cv_scores: empty ndarray
+            Placeholder for compatibility with cross-validation
+        
+        best_threshold: ndarray
+            Indices of retained dimensions
+        
+        denoiseddata: ndarray
+            Denoised neural responses
+            Shape (nunits, nconds) for trial-averaged
+            Shape (nunits, nconds, ntrials) for single-trial
+        
+        basis: ndarray, shape (nunits, dims)
+            Complete basis used for denoising
+        
+        signalsubspace: ndarray
+            Final basis functions used for denoising
+        
+        dimreduce: ndarray
+            Data projected onto signal subspace
+        
+        magnitudes: ndarray
+            Component magnitudes used for thresholding
+        
+        dimsretained: int
+            Number of dimensions retained
+    
+    Examples:
+    --------
+    Basic usage with eigenvalue-based thresholding:
+    >>> data = np.random.randn(10, 20, 5)  # 10 units, 20 conditions, 5 trials
+    >>> basis = np.eye(10)  # Identity basis for example
+    >>> gsn_results = {'cSb': np.eye(10), 'cNb': np.eye(10)}
+    >>> opt = {
+    ...     'mag_type': 0,
+    ...     'mag_frac': 0.1,  # Keep components > 10% of max
+    ...     'mag_mode': 0,    # Contiguous from strongest
+    ...     'denoisingtype': 0
+    ... }
+    >>> results = perform_magnitude_thresholding(data, basis, gsn_results, opt, V=0)
+    >>> print(f"Retained {results[8]} dimensions")
+    
+    Variance-based thresholding with any dimensions:
+    >>> opt.update({'mag_type': 1, 'mag_mode': 1})
+    >>> results = perform_magnitude_thresholding(data, basis, gsn_results, opt, V=0)
+    >>> print(f"Selected dimensions: {results[2]}")
+    
+    Single-trial denoising:
+    >>> opt['denoisingtype'] = 1
+    >>> results = perform_magnitude_thresholding(data, basis, gsn_results, opt, V=0)
+    >>> print(f"Denoised data shape: {results[3].shape}")  # (10, 20, 5)
+    
+    See Also:
+    --------
+    gsn_denoise : Main denoising function
+    perform_cross_validation : Alternative to magnitude thresholding
+    perform_gsn : Computes signal and noise covariance matrices
     """
     
     nunits, nconds, ntrials = data.shape
@@ -493,13 +827,56 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
 
 def negative_mse_columns(x, y):
-    """Calculate the negative mean squared error per column.
+    """Calculate the negative mean squared error between corresponding columns.
+    
+    This function computes the negative mean squared error (MSE) between each column
+    of two matrices. It is primarily used as a scoring function for cross-validation
+    in GSN denoising, where:
+    - Each column represents a unit/neuron
+    - Each row represents a condition/stimulus
+    - The negative sign makes it compatible with maximization
+        (higher scores = better predictions)
+    
+    The function handles empty inputs gracefully by returning zeros, which is useful
+    when no data survives thresholding.
+    
+    Algorithm Details:
+    -----------------
+    For each column i:
+    1. Computes squared differences: (x[:,i] - y[:,i])²
+    2. Takes mean across rows (conditions)
+    3. Multiplies by -1 to convert from error to score
+    
+    This results in a score where:
+    - 0 indicates perfect prediction
+    - More negative values indicate worse predictions
+    - Each unit gets its own score
     
     Args:
-        x: array of shape (nconds, nunits)
-        y: array of shape (nconds, nunits)
+        x: ndarray, shape (nconds, nunits)
+            First matrix (usually test data)
+            - nconds: number of conditions/stimuli
+            - nunits: number of units/neurons
+        
+        y: ndarray, shape (nconds, nunits)
+            Second matrix (usually predictions)
+            Must have same shape as x
+    
     Returns:
-        array of shape (nunits,) containing negative MSE for each column
+        ndarray, shape (nunits,)
+            Negative MSE for each column/unit
+            - Length matches number of columns in input
+            - More negative = worse prediction
+            - Zero = perfect prediction
+    
+    Examples:
+    --------
+    Basic usage:
+    >>> x = np.array([[1, 2], [3, 4]])  # 2 conditions, 2 units
+    >>> y = np.array([[1.1, 2.1], [2.9, 3.9]])  # Predictions
+    >>> scores = negative_mse_columns(x, y)
+    >>> print(f"Prediction scores: {scores}")  # Close to 0
+
     """
     if x.shape[0] == 0 or y.shape[0] == 0:
         return np.zeros(x.shape[1])  # Return zeros for empty arrays
