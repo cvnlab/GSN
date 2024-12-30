@@ -52,28 +52,18 @@ def gsn_denoise(data, V=None, opt=None):
                 Default: 0
 
     Returns:
-        Always returned:
+        dict with fields:
             denoiser: (nunits x nunits) denoising matrix
             cv_scores: (length(cv_thresholds) x ntrials x nunits) CV performance scores
             best_threshold: scalar or array indicating optimal threshold(s)
-        
-        Based on denoisingtype:
             denoiseddata: 
                 If denoisingtype=0: (nunits x nconds) trial-averaged denoised data
                 If denoisingtype=1: (nunits x nconds x ntrials) single-trial denoised data
-        
-        For cross-validation mode (cv_mode >= 0):
-            If cv_threshold_per='population':
-                signalsubspace: (nunits x dims) final basis functions for denoising
-                dimreduce: (dims x nconds) or (dims x nconds x ntrials) reduced dimension data
-            If cv_threshold_per='unit':
-                No additional returns
-        
-        For magnitude thresholding mode (cv_mode < 0):
-            mags: row vector with component magnitudes
-            dimsretained: row vector with indices of retained dimensions
-            signalsubspace: (nunits x dims) final basis functions for denoising
-            dimreduce: (dims x nconds) or (dims x nconds x ntrials) reduced dimension data
+            fullbasis: (nunits x dims) full basis matrix
+            signalsubspace: (nunits x dims) final basis functions for denoising, or None
+            dimreduce: (dims x nconds) or (dims x nconds x ntrials) reduced dimension data, or None
+            mags: array of component magnitudes, or None
+            dimsretained: scalar integer indicating number of dimensions retained, or None
     """
 
     # 1) Check for infinite or NaN data => some tests want an AssertionError.
@@ -197,19 +187,56 @@ def gsn_denoise(data, V=None, opt=None):
         if not np.all(np.diff(thresholds) > 0):
             raise ValueError("cv_thresholds must be in sorted order with unique values")
 
+    # Initialize return dictionary with None values
+    results = {
+        'denoiser': None,
+        'cv_scores': None,
+        'best_threshold': None,
+        'denoiseddata': None,
+        'fullbasis': fullbasis,
+        'signalsubspace': None,
+        'dimreduce': None,
+        'mags': None,
+        'dimsretained': None
+    }
+
     # 7) Decide cross-validation or magnitude-threshold
     # We'll treat negative or zero cv_mode as "do magnitude thresholding."
     if opt['cv_mode'] >= 0:
         denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = perform_cross_validation(data, basis, opt)
         
-        # Return values based on mode
+        # Update results dictionary
+        results.update({
+            'denoiser': denoiser,
+            'cv_scores': cv_scores,
+            'best_threshold': best_threshold,
+            'denoiseddata': denoiseddata,
+            'fullbasis': fullbasis
+        })
+        
+        # Add population-specific returns if applicable
         if opt['cv_threshold_per'] == 'population':
-            return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce
-        else:  # 'unit'
-            return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis
+            results.update({
+                'signalsubspace': signalsubspace,
+                'dimreduce': dimreduce
+            })
     else:
         denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce, mags, dimsretained = perform_magnitude_thresholding(data, basis, gsn_results, opt, V)
-        return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, stored_mags, dimsretained, signalsubspace, dimreduce
+        
+        # Update results dictionary with all magnitude thresholding returns
+        results.update({
+            'denoiser': denoiser,
+            'cv_scores': cv_scores,
+            'best_threshold': best_threshold,
+            'denoiseddata': denoiseddata,
+            'fullbasis': fullbasis,
+            'mags': stored_mags,
+            'dimsretained': dimsretained,
+            'signalsubspace': signalsubspace,
+            'dimreduce': dimreduce
+        })
+
+    return results
 
 def perform_cross_validation(data, basis, opt):
     """Perform cross-validation to find optimal threshold.
