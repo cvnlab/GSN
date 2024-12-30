@@ -264,43 +264,36 @@ function results = gsndenoise(data, V, opt)
 
         if V == 0
             % Just eigen-decompose cSb
-            [evecs, evals_diag] = eig(cSb);
-            evals = diag(evals_diag);
-            % Sort in descending order
-            [evals, idx] = sort(evals, 'descend');
-            evecs = evecs(:, idx);
-            basis = fliplr(fliplr(evecs)); %#ok<FLR> (No actual effect if we just sorted desc)
-            basis = evecs;  % We already sorted in desc order
-            mags = abs(evals);
+            [evecs, evals] = eig(cSb, 'vector');  % Use vector output for eigenvalues
+            [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
+            basis = evecs(:, idx);
+            mags = abs(evals(idx));
         elseif V == 1
             cNb_inv = inv_or_pinv(cNb);
             transformed_cov = cNb_inv * cSb;
-            [evecs, evals_diag] = eig(transformed_cov);
-            evals = diag(evals_diag);
-            [evals, idx] = sort(evals, 'descend');
-            evecs = evecs(:, idx);
-            basis = evecs;
-            mags = abs(evals);
+            [evecs, evals] = eig(transformed_cov, 'vector');  % Use vector output
+            [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
+            basis = evecs(:, idx);
+            mags = abs(evals(idx));
         elseif V == 2
-            [evecs, evals_diag] = eig(cNb);
-            evals = diag(evals_diag);
-            [evals, idx] = sort(evals, 'descend');
-            evecs = evecs(:, idx);
-            basis = evecs;
-            mags = abs(evals);
+            [evecs, evals] = eig(cNb, 'vector');  % Use vector output
+            [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
+            basis = evecs(:, idx);
+            mags = abs(evals(idx));
         elseif V == 3
             trial_avg = mean(data, 3);  % shape [nunits x nconds]
-            cov_matrix = cov(trial_avg.'); % shape [nunits x nunits]
-            [evecs, evals_diag] = eig(cov_matrix);
-            evals = diag(evals_diag);
-            [evals, idx] = sort(evals, 'descend');
-            evecs = evecs(:, idx);
-            basis = evecs;
-            mags = abs(evals);
+            cov_matrix = cov(trial_avg.');  % shape [nunits x nunits]
+            [evecs, evals] = eig(cov_matrix, 'vector');  % Use vector output
+            [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
+            basis = evecs(:, idx);
+            mags = abs(evals(idx));
         else
+            % V == 4 => random orthonormal
+            rng('default');  % Reset to default generator
+            rng(42, 'twister');  % Set seed to match Python
             rand_mat = randn(nunits);
-            [Q, ~] = qr(rand_mat);
-            basis = Q(:, 1:nunits);
+            [basis, ~] = qr(rand_mat, 0);  % Use economy QR
+            basis = basis(:, 1:nunits);
             mags = ones(nunits, 1);
         end
 
