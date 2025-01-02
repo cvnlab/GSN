@@ -4,20 +4,20 @@ from gsn.gsn_denoise import gsn_denoise
 def test_unit_mode_basic():
     """Test that unit-wise mode produces different thresholds for different units."""
     # Create synthetic data where different units have different optimal thresholds
-    nunits, nconds, ntrials = 3, 10, 5
+    nunits, nconds, ntrials = 9, 100, 5
     data = np.random.randn(nunits, nconds, ntrials)
     
     # Make first unit have strong signal in first component
-    data[0, :, :] = 5.0 * np.random.randn(nconds, ntrials) + np.random.randn(nconds, ntrials) * 0.1
+    data[:3, :, :] = 5.0 * np.random.randn(nconds, ntrials) + np.random.randn(nconds, ntrials) * 0.1
     
     # Make second unit have strong signal in first two components
-    data[1, :, :] = 2.5 * np.random.randn(nconds, ntrials) + 2.5 * np.random.randn(nconds, ntrials) + np.random.randn(nconds, ntrials) * 0.1
+    data[3:6, :, :] = 2.5 * np.random.randn(nconds, ntrials) + 2.5 * np.random.randn(nconds, ntrials) + np.random.randn(nconds, ntrials) * 0.1
     
     # Make third unit have weak signal
-    data[2, :, :] = np.random.randn(nconds, ntrials) * 0.1
+    data[6:, :, :] = np.random.randn(nconds, ntrials) * 0.1
 
     # Run GSN with unit-wise thresholding
-    opt = {'cv_threshold_per': 'unit', 'cv_thresholds': [1, 2, 3]}
+    opt = {'cv_threshold_per': 'unit', 'cv_thresholds': [1, 2, 3, 4, 5, 6, 7, 8, 9]}
     result = gsn_denoise(data, V=0, opt=opt)
     
     # Check that we got different thresholds for different units
