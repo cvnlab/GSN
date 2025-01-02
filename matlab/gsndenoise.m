@@ -47,7 +47,7 @@ function results = gsndenoise(data, V, opt)
     %         - Selects number of dimensions that gives best prediction
     %         - Can be done per-unit or for whole population
     %
-    %     b) Magnitude Thresholding (cv_mode < 0):
+    %     b) Magnitude Thresholding (cv_mode = -1):
     %         - Computes "magnitude" for each dimension:
     %             * Either eigenvalues (signal strength)
     %             * Or variance explained in the data
