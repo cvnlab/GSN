@@ -298,13 +298,13 @@ def gsn_denoise(data, V=None, opt=None):
         if not np.allclose(gram, np.eye(V.shape[1])):
             raise ValueError("Basis columns must be orthogonal")
             
-        basis = V
+        basis = V.copy()
         # For user-supplied basis, compute magnitudes based on variance in basis
         trial_avg = np.mean(data, axis=2)  # shape (nunits, nconds)
         trial_avg_reshaped = trial_avg.T  # shape (ncond, nvox)
         proj_data = trial_avg_reshaped @ basis  # shape (ncond, basis_dim)
-        mags = np.var(proj_data, axis=0)  # variance along conditions for each basis dimension
-
+        mags = np.var(proj_data, axis=0, ddof=1)  # variance along conditions for each basis dimension
+        
     # Store the full basis and magnitudes for return
     fullbasis = basis.copy()
     stored_mags = mags.copy()  # Store magnitudes for later use
@@ -548,7 +548,7 @@ def perform_cross_validation(data, basis, opt):
             best_thresh_unitwise.append(thresholds[best_idx])
         best_thresh_unitwise = np.array(best_thresh_unitwise)
         best_threshold = best_thresh_unitwise
-        
+                
         # Construct unit-wise denoiser
         denoiser = np.zeros((nunits, nunits))
         for unit_i in range(nunits):
@@ -754,20 +754,20 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
             # For user-supplied basis, compute projection variances
             trial_avg = np.mean(data, axis=2)
             proj = trial_avg.T @ basis
-            magnitudes = np.var(proj, axis=0)
+            magnitudes = np.var(proj, axis=0, ddof=1)
     else:
         # Variance-based threshold in user basis
         trial_avg = np.mean(data, axis=2)
         proj = trial_avg.T @ basis
-        magnitudes = np.var(proj, axis=0)
+        magnitudes = np.var(proj, axis=0, ddof=1)
 
     # Determine threshold as fraction of maximum magnitude
     threshold_val = mag_frac * np.max(np.abs(magnitudes))
     surviving = np.abs(magnitudes) >= threshold_val
-
+    
     # Find dimensions to retain based on mag_mode
     surv_idx = np.where(surviving)[0]
-
+    
     if len(surv_idx) == 0:
         # If no dimensions survive, return zero matrices
         denoiser = np.zeros((nunits, nunits))
