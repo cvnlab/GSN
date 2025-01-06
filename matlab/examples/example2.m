@@ -238,9 +238,11 @@ end
 hold off;
 
 %% Compare Initial Data, Denoised Data, and Noise
-% Apply denoising to test data
-test_results = gsndenoise(test_data, results.fullbasis, opt);
-denoised_data = test_results.denoiseddata;
+% Apply denoising to test data by directly using the denoiser matrix
+denoised_data = zeros(size(test_data));
+for t = 1:size(test_data, 3)
+    denoised_data(:,:,t) = results.denoiser * test_data(:,:,t);
+end
 noise = test_data - denoised_data;  % For single-trial denoising
 
 figure('Position', [100, 100, 2200, 400]);
