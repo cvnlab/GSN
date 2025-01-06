@@ -225,7 +225,21 @@ def gsn_denoise(data, V=None, opt=None):
     if 'cv_threshold_per' in opt:
         if opt['cv_threshold_per'] not in ['unit', 'population']:
             raise KeyError("cv_threshold_per must be 'unit' or 'population'")
-            
+
+    # Check if basis vectors are unit length and normalize if not
+    if isinstance(V, np.ndarray):
+        # First check and fix unit length
+        vector_norms = np.sqrt(np.sum(V**2, axis=0))
+        if not np.allclose(vector_norms, 1, rtol=0, atol=1e-10):
+            print('Normalizing basis vectors to unit length...')
+            V = V / vector_norms
+
+        # Then check orthogonality
+        gram = V.T @ V
+        if not np.allclose(gram, np.eye(gram.shape[0]), rtol=0, atol=1e-10):
+            print('Adjusting basis vectors to ensure orthogonality...')
+            V = make_orthonormal(V)
+
     # Now set defaults
     opt.setdefault('cv_scoring_fn', negative_mse_columns)
     opt.setdefault('cv_mode', 0)
@@ -881,3 +895,45 @@ def negative_mse_columns(x, y):
     if x.shape[0] == 0 or y.shape[0] == 0:
         return np.zeros(x.shape[1])  # Return zeros for empty arrays
     return -np.mean((x - y) ** 2, axis=0)
+
+def make_orthonormal(V):
+    """Find the nearest matrix with orthonormal columns.
+    
+    This function takes a matrix and finds the nearest matrix with orthonormal
+    columns using polar decomposition. The resulting matrix will have:
+    1. All columns unit length
+    2. All columns pairwise orthogonal
+    
+    Args:
+        V: ndarray of shape [m, n] where m >= n
+    
+    Returns:
+        V_orthonormal: ndarray of shape [m, n] with orthonormal columns
+    
+    Example:
+        >>> V = np.random.randn(5,3)  # Random 5x3 matrix
+        >>> V_ortho = make_orthonormal(V)
+        >>> # Check orthonormality
+        >>> gram = V_ortho.T @ V_ortho  # Should be very close to identity
+        >>> print(np.max(np.abs(gram - np.eye(gram.shape[0]))))  # Should be ~1e-15
+    """
+    # Check input dimensions
+    m, n = V.shape
+    if m < n:
+        raise ValueError('Input matrix must have at least as many rows as columns')
+    
+    # Use SVD to find the nearest orthonormal matrix
+    # SVD gives us V = U*S*Vh where U and Vh are orthogonal
+    # The nearest orthonormal matrix is U*Vh
+    U, _, Vh = np.linalg.svd(V, full_matrices=False)
+    
+    # Take only the first n columns of U if m > n
+    V_orthonormal = U[:,:n] @ Vh
+    
+    # Double check that the result is orthonormal within numerical precision
+    # This is mainly for debugging - the SVD method should guarantee this
+    gram = V_orthonormal.T @ V_orthonormal
+    if not np.allclose(gram, np.eye(n), rtol=0, atol=1e-10):
+        print('Warning: Result may not be perfectly orthonormal due to numerical precision')
+    
+    return V_orthonormal

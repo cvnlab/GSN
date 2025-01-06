@@ -220,6 +220,23 @@ function results = gsndenoise(data, V, opt)
         end
     end
 
+    % Check if basis vectors are unit length and normalize if not
+    if isnumeric(V) && ~isscalar(V)
+        % First check and fix unit length
+        vector_norms = sqrt(sum(V.^2, 1));
+        if any(abs(vector_norms - 1) > 1e-10)
+            fprintf('Normalizing basis vectors to unit length...\n');
+            V = V ./ vector_norms;
+        end
+
+        % Then check orthogonality
+        gram = V' * V;
+        if ~all(abs(gram - eye(size(gram))) < 1e-10, 'all')
+            fprintf('Adjusting basis vectors to ensure orthogonality...\n');
+            V = make_orthonormal(V);
+        end
+    end
+
     if ~isfield(opt, 'cv_scoring_fn')
         opt.cv_scoring_fn = @negative_mse_columns;
     end
@@ -750,53 +767,49 @@ end
 
 
 function scores = negative_mse_columns(x, y)
-    % NEGATIVE_MSE_COLUMNS Calculate the negative mean squared error between corresponding columns.
+    % Calculate negative mean squared error for each column
+    scores = -mean((x - y).^2, 1);
+end
+
+function V_orthonormal = make_orthonormal(V)
+    % MAKE_ORTHONORMAL Find the nearest matrix with orthonormal columns.
     %
-    % This function computes the negative mean squared error (MSE) between each column
-    % of two matrices. It is primarily used as a scoring function for cross-validation
-    % in GSN denoising, where:
-    % - Each column represents a unit/neuron
-    % - Each row represents a condition/stimulus
-    % - The negative sign makes it compatible with maximization
-    %     (higher scores = better predictions)
-    %
-    % The function handles empty inputs gracefully by returning zeros, which is useful
-    % when no data survives thresholding.
-    %
-    % Algorithm Details:
-    % -----------------
-    % For each column i:
-    % 1. Computes squared differences: (x(:,i) - y(:,i)).^2
-    % 2. Takes mean across rows (conditions)
-    % 3. Multiplies by -1 to convert from error to score
-    %
-    % This results in a score where:
-    % - 0 indicates perfect prediction
-    % - More negative values indicate worse predictions
-    % - Each unit gets its own score
+    % This function takes a matrix and finds the nearest matrix with orthonormal
+    % columns using polar decomposition. The resulting matrix will have:
+    % 1. All columns unit length
+    % 2. All columns pairwise orthogonal
     %
     % Args:
-    %   x: ndarray, shape (nconds, nunits)
-    %       First matrix (usually test data)
-    %   y: ndarray, shape (nconds, nunits)
-    %       Second matrix (usually predictions)
+    %   V: Matrix of size [m x n] where m >= n
     %
     % Returns:
-    %   scores: ndarray, shape (1, nunits)
-    %       Negative MSE for each column/unit
+    %   V_orthonormal: Matrix of size [m x n] with orthonormal columns
     %
-    % Examples:
-    %   % Basic usage:
-    %   x = [1 2; 3 4];
-    %   y = [1.1 2.1; 2.9 3.9];
-    %   scores = negative_mse_columns(x, y);
-    %   % close to 0
-
-    if isempty(x) || isempty(y)
-        scores = zeros(1, size(x, 2));
-        return
+    % Example:
+    %   V = randn(5,3);  % Random 5x3 matrix
+    %   V_ortho = make_orthonormal(V);
+    %   % Check orthonormality
+    %   gram = V_ortho' * V_ortho;  % Should be very close to identity
+    %   disp(max(abs(gram - eye(size(gram))), [], 'all'));  % Should be ~1e-15
+    
+    % Check input dimensions
+    [m, n] = size(V);
+    if m < n
+        error('Input matrix must have at least as many rows as columns');
     end
-    diff_sq = (x - y).^2;
-    mse_cols = mean(diff_sq, 1);
-    scores = -mse_cols;  % negative MSE
+    
+    % Use SVD to find the nearest orthonormal matrix
+    % SVD gives us V = U*S*Vh where U and Vh are orthogonal
+    % The nearest orthonormal matrix is U*Vh
+    [U, ~, Vh] = svd(V, 'econ');
+    
+    % Take only the first n columns of U if m > n
+    V_orthonormal = U(:,1:n) * Vh';
+    
+    % Double check that the result is orthonormal within numerical precision
+    % This is mainly for debugging - the SVD method should guarantee this
+    gram = V_orthonormal' * V_orthonormal;
+    if ~all(abs(gram - eye(n)) < 1e-10, 'all')
+        warning('Result may not be perfectly orthonormal due to numerical precision');
+    end
 end
