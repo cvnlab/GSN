@@ -133,7 +133,6 @@ plot(S, 'k', 'LineWidth', 3);
 title({'Signal Covariance', 'Eigenspectrum'});
 xlabel('Dimension');
 ylabel('Eigenvalue');
-set(gca, 'YScale', 'log');
 grid on;
 
 % Initialize arrays for signal/noise analysis
