@@ -53,6 +53,9 @@ def construct_nearest_psd_covariance(c1):
             v, d = np.linalg.eig(c1)
             d[d < 0] = 0
             c2 = v @ np.diag(d) @ v.T
+            
+        # ensure symmetric again
+        c2 = (c2 + c2.T)/2
 
         # old
         #u, s, v = np.linalg.svd(c1, full_matrices=True)
