@@ -4,7 +4,7 @@ from gsn.gsn_denoise import gsn_denoise
 def test_unit_mode_basic():
     """Test that unit-wise mode produces different thresholds for different units."""
     # Create synthetic data where different units have different optimal thresholds
-    nunits, nconds, ntrials = 9, 100, 5
+    nunits, nconds, ntrials = 25, 100, 5
     data = np.random.randn(nunits, nconds, ntrials)
     
     # Make first unit have strong signal in first component
@@ -36,15 +36,15 @@ def test_unit_mode_denoiser_structure():
 
 def test_unit_mode_vs_population():
     """Test that unit-wise mode gives different results than population mode."""
-    nunits, nconds, ntrials = 3, 10, 5
+    nunits, nconds, ntrials = 25, 100, 5
     data = np.random.randn(nunits, nconds, ntrials)
     
     # Run with unit-wise mode
-    opt_unit = {'cv_threshold_per': 'unit', 'cv_thresholds': [1, 2]}
+    opt_unit = {'cv_threshold_per': 'unit'}
     result_unit = gsn_denoise(data, V=0, opt=opt_unit)
     
     # Run with population mode
-    opt_pop = {'cv_threshold_per': 'population', 'cv_thresholds': [1, 2]}
+    opt_pop = {'cv_threshold_per': 'population'}
     result_pop = gsn_denoise(data, V=0, opt=opt_pop)
     
     # The denoiser matrices should be different
@@ -56,7 +56,7 @@ def test_unit_mode_denoised_data():
     nunits, nconds, ntrials = 3, 10, 5
     data = np.random.randn(nunits, nconds, ntrials)
     
-    opt = {'cv_threshold_per': 'unit', 'cv_thresholds': [1, 2]}
+    opt = {'cv_threshold_per': 'unit'}
     result = gsn_denoise(data, V=0, opt=opt)
     
     # Check denoised data dimensions
