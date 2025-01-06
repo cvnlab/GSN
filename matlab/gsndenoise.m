@@ -1,191 +1,210 @@
-function results = gsndenoise(data, V, opt)
-    % GSN_DENOISE Denoise neural data using Generative Modeling of Signal and Noise (GSN) denoising.
-    %
-    % This function implements GSN denoising, which uses cross-validation or magnitude thresholding
-    % to identify and remove noise dimensions while preserving signal dimensions. The algorithm:
-    %
-    % 1. Computes signal and noise covariance matrices from the data
-    % 2. Selects a basis for denoising (several options available)
-    % 3. Uses either cross-validation or magnitude thresholding to determine which dimensions to retain
-    % 4. Constructs a denoising matrix that projects data onto the retained dimensions
-    %
-    % The denoising can be performed either:
-    % - On trial-averaged data (default)
-    % - On single trials
-    % - Using population-level thresholding (same dimensions for all units)
-    % - Using unit-wise thresholding (different dimensions for each unit)
-    %
-    % Algorithm Details:
-    % -----------------
-    % The GSN denoising algorithm works by identifying dimensions in the neural data that contain
-    % primarily signal rather than noise. It does this in several steps:
-    %
-    % 1. Signal and Noise Estimation:
-    %     - For each condition, computes mean response across trials (signal estimate)
-    %     - For each condition, computes variance across trials (noise estimate)
-    %     - Builds signal (cSb) and noise (cNb) covariance matrices across conditions
-    %
-    % 2. Basis Selection (V parameter):
-    %     - V=0: Uses eigenvectors of signal covariance (cSb)
-    %     - V=1: Uses eigenvectors of signal covariance transformed by inverse noise covariance
-    %     - V=2: Uses eigenvectors of noise covariance (cNb)
-    %     - V=3: Uses PCA on trial-averaged data
-    %     - V=4: Uses random orthonormal basis
-    %     - V=matrix: Uses user-supplied orthonormal basis
-    %
-    % 3. Dimension Selection:
-    %     The algorithm must decide how many dimensions to keep. This can be done in two ways:
-    %
-    %     a) Cross-validation (cv_mode >= 0):
-    %         - Splits trials into training and testing sets
-    %         - For training set:
-    %             * Projects data onto different numbers of basis dimensions
-    %             * Creates denoising matrix for each dimensionality
-    %         - For test set:
-    %             * Measures how well denoised training data predicts test data
-    %             * Uses mean squared error (MSE) as prediction metric
-    %         - Selects number of dimensions that gives best prediction
-    %         - Can be done per-unit or for whole population
-    %
-    %     b) Magnitude Thresholding (cv_mode = -1):
-    %         - Computes "magnitude" for each dimension:
-    %             * Either eigenvalues (signal strength)
-    %             * Or variance explained in the data
-    %         - Sets threshold as fraction of maximum magnitude
-    %         - Keeps dimensions above threshold either:
-    %             * Contiguously from strongest dimension
-    %             * Or any dimension above threshold
-    %
-    % 4. Denoising:
-    %     - Creates denoising matrix using selected dimensions
-    %     - For trial-averaged denoising:
-    %         * Averages data across trials
-    %         * Projects through denoising matrix
-    %     - For single-trial denoising:
-    %         * Projects each trial through denoising matrix
-    %     - Returns denoised data and diagnostic information
-    %
-    % The algorithm is particularly effective because:
-    % - It adapts to the structure of both signal and noise in the data
-    % - It can handle different types of neural response patterns
-    % - It allows for different denoising strategies (population vs unit-wise)
-    % - It provides cross-validation to prevent overfitting
-    % - It can denoise both trial-averaged and single-trial data
-    %
-    % Inputs:
-    %   data - Neural responses array of size [nunits x nconds x ntrials]
-    %          - nunits: number of units/neurons
-    %          - nconds: number of conditions/stimuli
-    %          - ntrials: number of repeated measurements
-    %          Must have at least 2 trials and 2 conditions.
-    %
-    %   V    - (Optional) Basis selection mode (0,1,2,3,4) or custom basis matrix.
-    %          If matrix: size [nunits x D] with D >= 1, orthonormal columns.
-    %          Default: 0 (signal covariance eigenvectors)
-    %
-    %   opt  - (Optional) Options struct with fields:
-    %
-    %          Cross-validation options:
-    %          .cv_mode - Integer
-    %              0: n-1 train / 1 test split (default)
-    %              1: 1 train / n-1 test split
-    %              -1: use magnitude thresholding instead
-    %          .cv_threshold_per - String
-    %              'unit': different thresholds per unit (default)
-    %              'population': same threshold for all units
-    %          .cv_thresholds - Array
-    %              Dimensions to test in cross-validation
-    %              Default: 1 to nunits
-    %          .cv_scoring_fn - Function handle
-    %              Function to compute prediction error
-    %              Default: negative mean squared error per unit
-    %
-    %          Magnitude thresholding options:
-    %          .mag_type - Integer
-    %              0: use eigenvalues (default)
-    %              1: use variances
-    %          .mag_frac - Double
-    %              Fraction of maximum magnitude for threshold
-    %              Default: 0.01
-    %          .mag_mode - Integer
-    %              0: use contiguous dimensions from left (default)
-    %              1: use all dimensions above threshold
-    %
-    %          General options:
-    %          .denoisingtype - Integer
-    %              0: trial-averaged denoising (default)
-    %              1: single-trial denoising
-    %
-    % Outputs:
-    %   results - Struct with fields:
-    %     .denoiser - Matrix [nunits x nunits]
-    %         Matrix that projects data onto denoised space
-    %
-    %     .cv_scores - Array
-    %         Cross-validation scores for each threshold
-    %         Shape depends on cv_mode and cv_threshold_per
-    %
-    %     .best_threshold - Integer or array
-    %         Selected threshold(s)
-    %         Scalar for population mode
-    %         Array of length nunits for unit mode
-    %
-    %     .denoiseddata - Array
-    %         Denoised neural responses
-    %         Size [nunits x nconds] for trial-averaged
-    %         Size [nunits x nconds x ntrials] for single-trial
-    %
-    %     .fullbasis - Matrix [nunits x dims]
-    %         Complete basis used for denoising
-    %
-    %     .signalsubspace - Matrix or []
-    %         Final basis functions used for denoising
-    %         Empty for unit-wise mode
-    %
-    %     .dimreduce - Matrix or []
-    %         Data projected onto signal subspace
-    %         Empty for unit-wise mode
-    %
-    %     .mags - Array or []
-    %         Component magnitudes (for magnitude thresholding)
-    %
-    %     .dimsretained - Integer or []
-    %         Number of dimensions retained (for magnitude thresholding)
-    %
-    % Examples:
-    %   % Basic usage with default options:
-    %   data = randn(10, 20, 5);  % 10 units, 20 conditions, 5 trials
-    %   results = gsn_denoise(data);
-    %   denoised = results.denoiseddata;  % Get denoised data
-    %
-    %   % Using magnitude thresholding:
-    %   opt = struct();
-    %   opt.cv_mode = -1;  % Use magnitude thresholding
-    %   opt.mag_frac = 0.1;  % Keep components > 10% of max
-    %   opt.mag_mode = 0;  % Use contiguous dimensions
-    %   results = gsn_denoise(data, 0, opt);
-    %
-    %   % Unit-wise cross-validation:
-    %   opt = struct();
-    %   opt.cv_mode = 0;  % Leave-one-out CV
-    %   opt.cv_threshold_per = 'unit';  % Unit-specific thresholds
-    %   opt.cv_thresholds = [1, 2, 3];  % Test these dimensions
-    %   results = gsn_denoise(data, 0, opt);
-    %
-    %   % Single-trial denoising:
-    %   opt = struct();
-    %   opt.denoisingtype = 1;  % Single-trial mode
-    %   opt.cv_threshold_per = 'population';  % Same dims for all units
-    %   results = gsn_denoise(data, 0, opt);
-    %   denoised_trials = results.denoiseddata;  % [nunits x nconds x ntrials]
-    %
-    %   % Custom basis:
-    %   nunits = size(data, 1);
-    %   [custom_basis, ~] = qr(randn(nunits));
-    %   results = gsn_denoise(data, custom_basis);
-    %
-    % See also:
-    %   PERFORM_GSN, PERFORM_CROSS_VALIDATION, PERFORM_MAGNITUDE_THRESHOLDING
+function [results] = gsndenoise(data, V, opt)
+% GSNDENOISE Denoise neural data using Generative Modeling of Signal and Noise (GSN).
+%
+% Algorithm Details:
+% -----------------
+% The GSN denoising algorithm works by identifying dimensions in the neural data that contain
+% primarily signal rather than noise. It does this in several steps:
+%
+% 1. Signal and Noise Estimation:
+%     - For each condition, computes mean response across trials (signal estimate)
+%     - For each condition, computes variance across trials (noise estimate)
+%     - Builds signal (cSb) and noise (cNb) covariance matrices across conditions
+%
+% 2. Basis Selection (<V> parameter):
+%     - V=0: Uses eigenvectors of signal covariance (cSb)
+%     - V=1: Uses eigenvectors of signal covariance transformed by inverse noise covariance
+%     - V=2: Uses eigenvectors of noise covariance (cNb)
+%     - V=3: Uses PCA on trial-averaged data
+%     - V=4: Uses random orthonormal basis
+%     - V=matrix: Uses user-supplied orthonormal basis
+%
+% 3. Dimension Selection:
+%     The algorithm must decide how many dimensions to keep. This can be done in two ways:
+%
+%     a) Cross-validation (<cv_mode> >= 0):
+%         - Splits trials into training and testing sets
+%         - For training set:
+%             * Projects data onto different numbers of basis dimensions
+%             * Creates denoising matrix for each dimensionality
+%         - For test set:
+%             * Measures how well denoised training data predicts test data
+%             * Uses mean squared error (MSE) as prediction metric
+%         - Selects number of dimensions that gives best prediction
+%         - Can be done per-unit or for whole population
+%
+%     b) Magnitude Thresholding (<cv_mode> = -1):
+%         - Computes "magnitude" for each dimension:
+%             * Either eigenvalues (signal strength)
+%             * Or variance explained in the data
+%         - Sets threshold as fraction of maximum magnitude
+%         - Keeps dimensions above threshold either:
+%             * Contiguously from strongest dimension
+%             * Or any dimension above threshold
+%
+% 4. Denoising:
+%     - Creates denoising matrix using selected dimensions
+%     - For trial-averaged denoising:
+%         * Averages data across trials
+%         * Projects through denoising matrix
+%     - For single-trial denoising:
+%         * Projects each trial through denoising matrix
+%     - Returns denoised data and diagnostic information
+%
+% -------------------------------------------------------------------------
+% Inputs:
+% -------------------------------------------------------------------------
+%
+% <data> - shape [nunits x nconds x ntrials]. This indicates the measured
+%   responses to different conditions on distinct trials.
+%   The number of trials (<ntrials>) must be at least 2.
+% <V> - shape [nunits x nunits] or scalar. Indicates the set of basis functions to use.
+%   0 means perform GSN and use the eigenvectors of the
+%     signal covariance estimate (cSb)
+%   1 means perform GSN and use the eigenvectors of the
+%     signal covariance estimate, transformed by the inverse of 
+%     the noise covariance estimate (inv(cNb)*cSb)
+%   2 means perform GSN and use the eigenvectors of the 
+%     noise covariance estimate (cNb)
+%   3 means naive PCA (i.e. eigenvectors of the covariance
+%     of the trial-averaged data)
+%   4 means use a randomly generated orthonormal basis [nunits x nunits]
+%   B means use user-supplied basis B. The dimensionality of B
+%     should be [nunits x D] where D >= 1. The columns of B should
+%     unit-length and pairwise orthogonal.
+%   Default: 0.
+% <opt> - struct with the following optional fields:
+%   <cv_mode> - scalar. Indicates how to determine the optimal threshold:
+%     0 means cross-validation using n-1 (train) / 1 (test) splits of trials.
+%     1 means cross-validation using 1 (train) / n-1 (test) splits of trials.
+%    -1 means do not perform cross-validation and instead set the threshold
+%       based on when the magnitudes of components drop below
+%       a certain fraction (see <mag_frac>).
+%     Default: 0.
+%   <cv_threshold_per> - string. 'population' or 'unit', specifying 
+%     whether to use unit-wise thresholding (possibly different thresholds
+%     for different units) or population thresholding (one threshold for
+%     all units). Matters only when <cv_mode> is 0 or 1. Default: 'unit'.
+%   <cv_thresholds> - shape [1 x n_thresholds]. Vector of thresholds to evaluate in
+%     cross-validation. Matters only when <cv_mode> is 0 or 1.
+%     Each threshold is a positive integer indicating a potential 
+%     number of dimensions to retain. Should be in sorted order and 
+%     elements should be unique. Default: 1:D where D is the 
+%     maximum number of dimensions.
+%   <cv_scoring_fn> - function handle. For <cv_mode> 0 or 1 only.
+%     It is a function handle to compute denoiser performance.
+%     Default: @negative_mse_columns. 
+%   <mag_type> - scalar. Indicates how to obtain component magnitudes.
+%     Matters only when <cv_mode> is -1.
+%     0 means use eigenvalues (<V> must be 0, 1, 2, or 3)
+%     1 means use signal variance computed from the data
+%     Default: 0.
+%   <mag_frac> - scalar. Indicates a fraction of the maximum magnitude
+%     component. Matters only when <cv_mode> is -1.
+%     Default: 0.01.
+%   <mag_mode> - scalar. Indicates how to select dimensions. Matters only 
+%     when <cv_mode> is -1.
+%     0 means use the smallest number of dimensions that all survive threshold.
+%       In this case, the dimensions returned are all contiguous from the left.
+%     1 means use all dimensions that survive the threshold.
+%       In this case, the dimensions returned are not necessarily contiguous.
+%     Default: 0.
+%   <denoisingtype> - scalar. Indicates denoising type:
+%     0 means denoising in the trial-averaged sense
+%     1 means single-trial-oriented denoising
+%     Note that if <cv_mode> is 0, you probably want <denoisingtype> to be 0,
+%     and if <cv_mode> is 1, you probably want <denoisingtype> to be 1, but
+%     the code is deliberately flexible for users to specify what they want.
+%     Default: 0.
+%
+% -------------------------------------------------------------------------
+% Returns:
+% -------------------------------------------------------------------------
+%
+% Return in all cases:
+%   <denoiser> - shape [nunits x nunits]. This is the denoising matrix.
+%   <fullbasis> - shape [nunits x dims]. This is the full set of basis functions.
+%
+% In the case that <denoisingtype> is 0, we return:
+%   <denoiseddata> - shape [nunits x nconds]. This is the trial-averaged data
+%     after applying the denoiser.
+%
+% In the case that <denoisingtype> is 1, we return:
+%   <denoiseddata> - shape [nunits x nconds x ntrials]. This is the 
+%     single-trial data after applying the denoiser.
+%
+% In the case that <cv_mode> is 0 or 1 (cross-validation):
+%   If <cv_threshold_per> is 'population', we return:
+%     <best_threshold> - shape [1 x 1]. The optimal threshold (a single integer),
+%       indicating how many dimensions are retained.
+%     <signalsubspace> - shape [nunits x best_threshold]. This is the final set of basis
+%       functions selected for denoising (i.e. the subspace into which
+%       we project). The number of basis functions is equal to <best_threshold>.
+%     <dimreduce> - shape [best_threshold x nconds] or [best_threshold x nconds x ntrials]. This
+%       is the trial-averaged data (or single-trial data) after denoising.
+%       Importantly, we do not reconstruct the original units but leave
+%       the data projected into the set of reduced dimensions.
+%   If <cv_threshold_per> is 'unit', we return:
+%     <best_threshold> - shape [1 x nunits]. The optimal threshold for each unit.
+%   In both cases ('population' or 'unit'), we return:
+%     <denoised_cv_scores> - shape [n_thresholds x ntrials x nunits].
+%       Cross-validation performance scores for each threshold.
+%
+% In the case that <cv_mode> is -1 (magnitude-based):
+%   <mags> - shape [1 x dims]. Component magnitudes used for thresholding.
+%   <dimsretained> - shape [1 x n_retained]. The indices of the dimensions retained.
+%   <signalsubspace> - shape [nunits x n_retained]. This is the final set of basis
+%     functions selected for denoising (i.e. the subspace into which
+%     we project).
+%   <dimreduce> - shape [n_retained x nconds] or [n_retained x nconds x ntrials]. This
+%     is the trial-averaged data (or single-trial data) after denoising.
+%     Importantly, we do not reconstruct the original units but leave
+%     the data projected into the set of reduced dimensions.
+%
+% -------------------------------------------------------------------------
+% Examples:
+% -------------------------------------------------------------------------
+%
+%   % Basic usage with default options
+%   data = randn(100, 200, 3);  % 100 voxels, 200 conditions, 3 trials
+%   opt.cv_mode = 0;  % n-1 train / 1 test split
+%   opt.cv_threshold_per = 'unit';  % Same threshold for all units
+%   opt.cv_thresholds = 1:100;  % Test all possible dimensions
+%   opt.cv_scoring_fn = @negative_mse_columns;  % Use negative MSE as scoring function
+%   opt.denoisingtype = 1;  % Single-trial denoising
+%   results = gsndenoise(data, [], opt);
+%
+%   % Using magnitude thresholding
+%   opt = struct();
+%   opt.cv_mode = -1;  % Use magnitude thresholding
+%   opt.mag_frac = 0.1;  % Keep components > 10% of max
+%   opt.mag_mode = 0;  % Use contiguous dimensions
+%   results = gsndenoise(data, 0, opt);
+%
+%   % Unit-wise cross-validation
+%   opt = struct();
+%   opt.cv_mode = 0;  % Leave-one-out CV
+%   opt.cv_threshold_per = 'unit';  % Unit-specific thresholds
+%   opt.cv_thresholds = [1, 2, 3];  % Test these dimensions
+%   results = gsndenoise(data, 0, opt);
+%
+%   % Single-trial denoising with population threshold
+%   opt = struct();
+%   opt.denoisingtype = 1;  % Single-trial mode
+%   opt.cv_threshold_per = 'population';  % Same dims for all units
+%   results = gsndenoise(data, 0, opt);
+%   denoised_trials = results.denoiseddata;  % [nunits x nconds x ntrials]
+%
+%   % Custom basis
+%   nunits = size(data, 1);
+%   [custom_basis, ~] = qr(randn(nunits));
+%   results = gsndenoise(data, custom_basis);
+%
+% -------------------------------------------------------------------------
+% History:
+% -------------------------------------------------------------------------
+%
+%   - 2025/01/06 - Initial version.
 
     % 1) Check for infinite or NaN data => error if found
     if any(~isfinite(data(:)))
@@ -217,6 +236,23 @@ function results = gsndenoise(data, V, opt)
     if isfield(opt, 'cv_threshold_per')
         if ~any(strcmp(opt.cv_threshold_per, {'unit','population'}))
             error('cv_threshold_per must be ''unit'' or ''population''');
+        end
+    end
+
+    % Check if basis vectors are unit length and normalize if not
+    if isnumeric(V) && ~isscalar(V)
+        % First check and fix unit length
+        vector_norms = sqrt(sum(V.^2, 1));
+        if any(abs(vector_norms - 1) > 1e-10)
+            fprintf('Normalizing basis vectors to unit length...\n');
+            V = V ./ vector_norms;
+        end
+
+        % Then check orthogonality
+        gram = V' * V;
+        if ~all(abs(gram - eye(size(gram))) < 1e-10, 'all')
+            fprintf('Adjusting basis vectors to ensure orthogonality...\n');
+            V = make_orthonormal(V);
         end
     end
 
@@ -394,64 +430,46 @@ end
 
 
 function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce] = perform_cross_validation(data, basis, opt)
-    % PERFORM_CROSS_VALIDATION Perform cross-validation to select optimal dimensions.
-    %
-    % This function implements the cross-validation procedure for GSN denoising.
-    % It splits the data into training and test sets, then evaluates different
-    % numbers of dimensions to find the optimal denoising threshold.
-    %
-    % The function supports both:
-    % - Population-level thresholding (same dimensions for all units)
-    % - Unit-wise thresholding (different dimensions for each unit)
-    %
-    % Algorithm Details:
-    % -----------------
-    % For each threshold value:
-    % 1. Split data into training and test sets
-    % 2. Project training data onto different numbers of dimensions
-    % 3. Create denoising matrix for each dimensionality
-    % 4. Measure prediction quality on test set
-    % 5. Select threshold that gives best predictions
-    %
-    % The splitting can be done in two ways:
-    % - Leave-one-out: Use n-1 trials for training, 1 for testing
-    % - Hold-one-out: Use 1 trial for training, n-1 for testing
-    %
-    % Args:
-    %   data: ndarray, shape (nunits, nconds, ntrials)
-    %       Neural response data to denoise
-    %   basis: ndarray, shape (nunits, dims)
-    %       Orthonormal basis for denoising
-    %   opt: struct with fields:
-    %       - cv_mode: int
-    %           0: n-1 train / 1 test split
-    %           1: 1 train / n-1 test split
-    %       - cv_threshold_per: str
-    %           'unit': different thresholds per unit
-    %           'population': same threshold for all units
-    %       - cv_thresholds: array
-    %           Dimensions to test
-    %       - cv_scoring_fn: function handle
-    %           Function to compute prediction error
-    %       - denoisingtype: int
-    %           0: trial-averaged denoising
-    %           1: single-trial denoising
-    %
-    % Returns:
-    %   denoiser: ndarray, shape (nunits, nunits)
-    %       Matrix that projects data onto denoised space
-    %   cv_scores: ndarray
-    %       Cross-validation scores for each threshold
-    %   best_threshold: int or array
-    %       Selected threshold(s)
-    %   denoiseddata: ndarray
-    %       Denoised neural responses
-    %   fullbasis: ndarray, shape (nunits, dims)
-    %       Complete basis used for denoising
-    %   signalsubspace: ndarray or []
-    %       Final basis functions used for denoising
-    %   dimreduce: ndarray or []
-    %       Data projected onto signal subspace
+% PERFORM_CROSS_VALIDATION Perform cross-validation to determine optimal denoising dimensions.
+%
+% Uses cross-validation to determine how many dimensions to retain for denoising:
+% 1. Split trials into training and testing sets
+% 2. Project training data into basis
+% 3. Create denoising matrix for each dimensionality
+% 4. Measure prediction quality on test set
+% 5. Select threshold that gives best predictions
+%
+% The splitting can be done in two ways:
+% - Leave-one-out: Use n-1 trials for training, 1 for testing
+% - Keep-one-in: Use 1 trial for training, n-1 for testing
+%
+% Inputs:
+%   <data> - shape [nunits x nconds x ntrials]. Neural response data to denoise.
+%   <basis> - shape [nunits x dims]. Orthonormal basis for denoising.
+%   <opt> - struct with fields:
+%     <cv_mode> - scalar. 
+%         0: n-1 train / 1 test split
+%         1: 1 train / n-1 test split
+%     <cv_threshold_per> - string.
+%         'unit': different thresholds per unit
+%         'population': same threshold for all units
+%     <cv_thresholds> - shape [1 x n_thresholds].
+%         Dimensions to test
+%     <cv_scoring_fn> - function handle.
+%         Function to compute prediction error
+%     <denoisingtype> - scalar.
+%         0: trial-averaged denoising
+%         1: single-trial denoising
+%
+% Returns:
+%   <denoiser> - shape [nunits x nunits]. Matrix that projects data onto denoised space.
+%   <cv_scores> - shape [n_thresholds x ntrials x nunits]. Cross-validation scores for each threshold.
+%   <best_threshold> - shape [1 x nunits] or scalar. Selected threshold(s).
+%   <denoiseddata> - shape [nunits x nconds] or [nunits x nconds x ntrials]. Denoised neural responses.
+%   <fullbasis> - shape [nunits x dims]. Complete basis used for denoising.
+%   <signalsubspace> - shape [nunits x best_threshold] or []. Final basis functions used for denoising.
+%   <dimreduce> - shape [best_threshold x nconds] or [best_threshold x nconds x ntrials] or []. 
+%       Data projected onto signal subspace.
 
     [nunits, nconds, ntrials] = size(data);
     cv_mode = opt.cv_mode;
@@ -578,58 +596,56 @@ end
 
 function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained] = ...
     perform_magnitude_thresholding(data, basis, gsn_results, opt, V)
-    % PERFORM_MAGNITUDE_THRESHOLDING Select dimensions using magnitude thresholding.
-    %
-    % This function implements the magnitude thresholding procedure for GSN denoising.
-    % It selects dimensions based on their magnitudes (eigenvalues or variances)
-    % rather than using cross-validation.
-    %
-    % The function supports two modes:
-    % - Contiguous selection from strongest dimension
-    % - Selection of any dimension above threshold
-    %
-    % Algorithm Details:
-    % -----------------
-    % 1. Compute magnitudes for each dimension:
-    %    - Either eigenvalues from decomposition
-    %    - Or variance explained in the data
-    % 2. Set threshold as fraction of maximum magnitude
-    % 3. Select dimensions either:
-    %    - Contiguously from strongest dimension
-    %    - Or any dimension above threshold
-    % 4. Create denoising matrix using selected dimensions
-    %
-    % Args:
-    %   data: ndarray, shape (nunits, nconds, ntrials)
-    %       Neural response data to denoise
-    %   basis: ndarray, shape (nunits, dims)
-    %       Orthonormal basis for denoising
-    %   gsn_results: struct
-    %       Results from GSN computation
-    %   opt: struct
-    %       Options for magnitude thresholding
-    %   V: int or ndarray
-    %       Basis selection mode or custom basis
-    %
-    % Returns:
-    %   denoiser: ndarray, shape (nunits, nunits)
-    %       Matrix that projects data onto denoised space
-    %   cv_scores: ndarray
-    %       Empty array (not used in magnitude thresholding)
-    %   best_threshold: array
-    %       Selected dimensions
-    %   denoiseddata: ndarray
-    %       Denoised neural responses
-    %   basis: ndarray, shape (nunits, dims)
-    %       Complete basis used for denoising
-    %   signalsubspace: ndarray
-    %       Final basis functions used for denoising
-    %   dimreduce: ndarray
-    %       Data projected onto signal subspace
-    %   magnitudes: ndarray
-    %       Component magnitudes used for thresholding
-    %   dimsretained: int
-    %       Number of dimensions retained
+% PERFORM_MAGNITUDE_THRESHOLDING Select dimensions using magnitude thresholding.
+%
+% Implements the magnitude thresholding procedure for GSN denoising.
+% Selects dimensions based on their magnitudes (eigenvalues or variances)
+% rather than using cross-validation.
+%
+% Supports two modes:
+% - Contiguous selection of the left-most group of dimensions above threshold
+% - Selection of any dimension above threshold
+%
+% Algorithm Details:
+% 1. Compute magnitudes for each dimension:
+%    - Either eigenvalues from decomposition
+%    - Or variance explained in the data
+% 2. Set threshold as fraction of maximum magnitude
+% 3. Select dimensions either:
+%    - Contiguously from strongest dimension
+%    - Or any dimension above threshold
+% 4. Create denoising matrix using selected dimensions
+%
+% Inputs:
+%   <data> - shape [nunits x nconds x ntrials]. Neural response data to denoise.
+%   <basis> - shape [nunits x dims]. Orthonormal basis for denoising.
+%   <gsn_results> - struct. Results from GSN computation containing:
+%       <cSb> - shape [nunits x nunits]. Signal covariance matrix.
+%       <cNb> - shape [nunits x nunits]. Noise covariance matrix.
+%   <opt> - struct with fields:
+%       <mag_type> - scalar. How to obtain component magnitudes:
+%           0: use eigenvalues (<V> must be 0, 1, 2, or 3)
+%           1: use signal variance computed from data
+%       <mag_frac> - scalar. Fraction of maximum magnitude to use as threshold.
+%       <mag_mode> - scalar. How to select dimensions:
+%           0: contiguous from strongest dimension
+%           1: any dimension above threshold
+%       <denoisingtype> - scalar. Type of denoising:
+%           0: trial-averaged
+%           1: single-trial
+%   <V> - scalar or matrix. Basis selection mode or custom basis.
+%
+% Returns:
+%   <denoiser> - shape [nunits x nunits]. Matrix that projects data onto denoised space.
+%   <cv_scores> - shape [0 x 0]. Empty array (not used in magnitude thresholding).
+%   <best_threshold> - shape [1 x n_retained]. Selected dimensions.
+%   <denoiseddata> - shape [nunits x nconds] or [nunits x nconds x ntrials]. Denoised neural responses.
+%   <basis> - shape [nunits x dims]. Complete basis used for denoising.
+%   <signalsubspace> - shape [nunits x n_retained]. Final basis functions used for denoising.
+%   <dimreduce> - shape [n_retained x nconds] or [n_retained x nconds x ntrials]. 
+%       Data projected onto signal subspace.
+%   <magnitudes> - shape [1 x dims]. Component magnitudes used for thresholding.
+%   <dimsretained> - scalar. Number of dimensions retained.
 
     [nunits, nconds, ntrials] = size(data);
     mag_type = opt.mag_type;
@@ -750,53 +766,81 @@ end
 
 
 function scores = negative_mse_columns(x, y)
-    % NEGATIVE_MSE_COLUMNS Calculate the negative mean squared error between corresponding columns.
+    % NEGATIVE_MSE_COLUMNS Calculate negative mean squared error between columns.
     %
-    % This function computes the negative mean squared error (MSE) between each column
-    % of two matrices. It is primarily used as a scoring function for cross-validation
-    % in GSN denoising, where:
-    % - Each column represents a unit/neuron
-    % - Each row represents a condition/stimulus
-    % - The negative sign makes it compatible with maximization
-    %     (higher scores = better predictions)
-    %
-    % The function handles empty inputs gracefully by returning zeros, which is useful
-    % when no data survives thresholding.
-    %
-    % Algorithm Details:
-    % -----------------
-    % For each column i:
-    % 1. Computes squared differences: (x(:,i) - y(:,i)).^2
-    % 2. Takes mean across rows (conditions)
-    % 3. Multiplies by -1 to convert from error to score
-    %
-    % This results in a score where:
-    % - 0 indicates perfect prediction
-    % - More negative values indicate worse predictions
-    % - Each unit gets its own score
-    %
-    % Args:
-    %   x: ndarray, shape (nconds, nunits)
-    %       First matrix (usually test data)
-    %   y: ndarray, shape (nconds, nunits)
-    %       Second matrix (usually predictions)
+    % Inputs:
+    %   <x> - nconds x nunits. First matrix (usually test data).
+    %   <y> - nconds x nunits. Second matrix (usually predictions).
+    %       Must have same shape as <x>.
     %
     % Returns:
-    %   scores: ndarray, shape (1, nunits)
-    %       Negative MSE for each column/unit
+    %   <scores> - 1 x nunits. Negative MSE for each column/unit.
+    %           0 indicates perfect prediction
+    %           More negative values indicate worse predictions
+    %           Each unit gets its own score
     %
-    % Examples:
-    %   % Basic usage:
-    %   x = [1 2; 3 4];
-    %   y = [1.1 2.1; 2.9 3.9];
-    %   scores = negative_mse_columns(x, y);
-    %   % close to 0
+    % Example:
+    %   x = [1 2; 3 4];  % 2 conditions, 2 units
+    %   y = [1.1 2.1; 2.9 3.9];  % Predictions
+    %   scores = negative_mse_columns(x, y);  % Close to 0
+    %
+    % Notes:
+    %   The function handles empty inputs gracefully by returning zeros, which is useful
+    %   when no data survives thresholding.
 
-    if isempty(x) || isempty(y)
-        scores = zeros(1, size(x, 2));
-        return
+    % Calculate negative mean squared error for each column
+    scores = -mean((x - y).^2, 1);
+end
+
+function V_orthonormal = make_orthonormal(V)
+    % MAKE_ORTHONORMAL Find the nearest matrix with orthonormal columns.
+    %
+    % Uses Singular Value Decomposition (SVD) to find the nearest orthonormal matrix:
+    % 1. Decompose <V> = <U>*<S>*<Vh> where <U> and <Vh> are orthogonal
+    % 2. The nearest orthonormal matrix is <U>*<Vh>
+    % 3. Take only the first n columns if m > n
+    % 4. Verify orthonormality within numerical precision
+    %
+    % Inputs:
+    %   <V> - m x n matrix where m >= n. Input matrix to be made orthonormal.
+    %       The number of rows (m) must be at least as large as the number of
+    %       columns (n).
+    %
+    % Returns:
+    %   <V_orthonormal> - m x n matrix with orthonormal columns.
+    %                   The resulting matrix will have:
+    %                   1. All columns unit length
+    %                   2. All columns pairwise orthogonal
+    %
+    % Example:
+    %   V = randn(5,3);  % Random 5x3 matrix
+    %   V_ortho = make_orthonormal(V);
+    %   % Check orthonormality
+    %   gram = V_ortho' * V_ortho;  % Should be very close to identity
+    %   disp(max(abs(gram - eye(size(gram))), [], 'all'));  % Should be ~1e-15
+    %
+    % Notes:
+    %   The SVD method guarantees orthonormality within numerical precision.
+    %   A warning is issued if the result is not perfectly orthonormal.
+    
+    % Check input dimensions
+    [m, n] = size(V);
+    if m < n
+        error('Input matrix must have at least as many rows as columns');
     end
-    diff_sq = (x - y).^2;
-    mse_cols = mean(diff_sq, 1);
-    scores = -mse_cols;  % negative MSE
+    
+    % Use SVD to find the nearest orthonormal matrix
+    % SVD gives us V = U*S*Vh where U and Vh are orthogonal
+    % The nearest orthonormal matrix is U*Vh
+    [U, ~, Vh] = svd(V, 'econ');
+    
+    % Take only the first n columns of U if m > n
+    V_orthonormal = U(:,1:n) * Vh';
+    
+    % Double check that the result is orthonormal within numerical precision
+    % This is mainly for debugging - the SVD method should guarantee this
+    gram = V_orthonormal' * V_orthonormal;
+    if ~all(abs(gram - eye(n)) < 1e-10, 'all')
+        warning('Result may not be perfectly orthonormal due to numerical precision');
+    end
 end
