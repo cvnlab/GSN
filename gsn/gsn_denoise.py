@@ -272,7 +272,7 @@ def gsn_denoise(data, V=None, opt=None):
     if isinstance(V, int):
         if V not in [0, 1, 2, 3, 4]:
             raise ValueError("V must be in [0..4] (int) or a 2D numpy array.")
-        gsn_results = perform_gsn(data)
+        gsn_results = perform_gsn(data, {'wantverbose': False})
         cSb = gsn_results['cSb']
         cNb = gsn_results['cNb']
 
@@ -283,31 +283,47 @@ def gsn_denoise(data, V=None, opt=None):
         if V == 0:
             # Just eigen-decompose cSb
             evals, evecs = np.linalg.eigh(cSb)
-            basis = np.fliplr(evecs)
-            mags = np.abs(np.flip(evals))  # Store magnitudes for later
+            # Sort by absolute value of eigenvalues
+            idx = np.argsort(np.abs(evals))[::-1]
+            evals = evals[idx]
+            evecs = evecs[:, idx]
+            basis = evecs
+            magnitudes = np.abs(evals)  # No need to flip, already sorted
         elif V == 1:
             cNb_inv = inv_or_pinv(cNb)
             transformed_cov = cNb_inv @ cSb
             evals, evecs = np.linalg.eigh(transformed_cov)
-            basis = np.fliplr(evecs)
-            mags = np.abs(np.flip(evals))  # Store magnitudes for later
+            # Sort by absolute value of eigenvalues
+            idx = np.argsort(np.abs(evals))[::-1]
+            evals = evals[idx]
+            evecs = evecs[:, idx]
+            basis = evecs
+            magnitudes = np.abs(evals)  # No need to flip, already sorted
         elif V == 2:
             evals, evecs = np.linalg.eigh(cNb)
-            basis = np.fliplr(evecs)
-            mags = np.abs(np.flip(evals))  # Store magnitudes for later
+            # Sort by absolute value of eigenvalues
+            idx = np.argsort(np.abs(evals))[::-1]
+            evals = evals[idx]
+            evecs = evecs[:, idx]
+            basis = evecs
+            magnitudes = np.abs(evals)  # No need to flip, already sorted
         elif V == 3:
-            trial_avg = np.mean(data, axis=2)  # shape (nunits, nconds)
-            cov_matrix = np.cov(trial_avg)     # shape (nunits, nunits)
-            evals, evecs = np.linalg.eigh(cov_matrix)
-            basis = np.fliplr(evecs)
-            mags = np.abs(np.flip(evals))  # Store magnitudes for later
-        else:  # V == 4 => random orthonormal
+            trial_avg = np.mean(data, axis=2)
+            cov_mat = np.cov(trial_avg)
+            evals, evecs = np.linalg.eigh(cov_mat)
+            # Sort by absolute value of eigenvalues
+            idx = np.argsort(np.abs(evals))[::-1]
+            evals = evals[idx]
+            evecs = evecs[:, idx]
+            basis = evecs
+            magnitudes = np.abs(evals)  # No need to flip, already sorted
+        else:  # V == 4
             # Generate a random basis with same dimensions as eigenvector basis
             rand_mat = np.random.randn(nunits, nunits)  # Start with square matrix
             basis, _ = np.linalg.qr(rand_mat)
             # Only keep first nunits columns to match eigenvector basis dimensions
             basis = basis[:, :nunits]
-            mags = np.ones(nunits)  # No meaningful magnitudes for random basis
+            magnitudes = np.ones(nunits)  # No meaningful magnitudes for random basis
     else:
         # If V not int => must be a numpy array
         if not isinstance(V, np.ndarray):
@@ -334,11 +350,11 @@ def gsn_denoise(data, V=None, opt=None):
         trial_avg = np.mean(data, axis=2)  # shape (nunits, nconds)
         trial_avg_reshaped = trial_avg.T  # shape (ncond, nvox)
         proj_data = trial_avg_reshaped @ basis  # shape (ncond, basis_dim)
-        mags = np.var(proj_data, axis=0, ddof=1)  # variance along conditions for each basis dimension
+        magnitudes = np.var(proj_data, axis=0, ddof=1)  # variance along conditions for each basis dimension
         
     # Store the full basis and magnitudes for return
     fullbasis = basis.copy()
-    stored_mags = mags.copy()  # Store magnitudes for later use
+    stored_mags = magnitudes.copy()  # Store magnitudes for later use
 
     # 6) Default cross-validation thresholds if not provided
     if 'cv_thresholds' not in opt:
@@ -618,21 +634,39 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
         # Eigen-based threshold
         if isinstance(V, (int, np.integer)):
             if V == 0:
-                evals = np.linalg.eigvalsh(gsn_results['cSb'])
-                magnitudes = evals  # Keep original order for eigenvalues
+                # Get both eigenvalues and eigenvectors
+                evals, evecs = np.linalg.eigh(gsn_results['cSb'])
+                # Sort by magnitude in descending order
+                sort_idx = np.argsort(-np.abs(evals))  # Descending order
+                evals = evals[sort_idx]
+                evecs = evecs[:, sort_idx]
+                magnitudes = np.abs(evals)
+                basis = evecs  # Use sorted eigenvectors as basis
             elif V == 1:
                 cNb_inv = np.linalg.pinv(gsn_results['cNb'])
                 matM = cNb_inv @ gsn_results['cSb']
-                evals = np.linalg.eigvalsh(matM)
-                magnitudes = evals  # Keep original order for eigenvalues
+                evals, evecs = np.linalg.eigh(matM)
+                sort_idx = np.argsort(-np.abs(evals))  # Descending order
+                evals = evals[sort_idx]
+                evecs = evecs[:, sort_idx]
+                magnitudes = np.abs(evals)
+                basis = evecs
             elif V == 2:
-                evals = np.linalg.eigvalsh(gsn_results['cNb'])
-                magnitudes = evals  # Keep original order for eigenvalues
+                evals, evecs = np.linalg.eigh(gsn_results['cNb'])
+                sort_idx = np.argsort(-np.abs(evals))  # Descending order
+                evals = evals[sort_idx]
+                evecs = evecs[:, sort_idx]
+                magnitudes = np.abs(evals)
+                basis = evecs
             elif V == 3:
                 trial_avg = np.mean(data, axis=2)
-                cov_mat = np.cov(trial_avg.T)
-                evals = np.linalg.eigvalsh(cov_mat)
-                magnitudes = evals  # Keep original order for eigenvalues
+                cov_mat = np.cov(trial_avg)
+                evals, evecs = np.linalg.eigh(cov_mat)
+                sort_idx = np.argsort(-np.abs(evals))  # Descending order
+                evals = evals[sort_idx]
+                evecs = evecs[:, sort_idx]
+                magnitudes = np.abs(evals)
+                basis = evecs
             else:  # V == 4
                 magnitudes = np.ones(basis.shape[1])
         else:
