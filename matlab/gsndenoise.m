@@ -303,26 +303,28 @@ function [results] = gsndenoise(data, V, opt)
             [evecs, evals] = eig(cSb, 'vector');  % Use vector output for eigenvalues
             [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
             basis = evecs(:, idx);
-            mags = abs(evals(idx));
+            mags = evals(idx);
         elseif V == 1
-            cNb_inv = inv_or_pinv(cNb);
-            transformed_cov = cNb_inv * cSb;
-            [evecs, evals] = eig(transformed_cov, 'vector');  % Use vector output
+            % inv(cNb)*cSb - ensure symmetric treatment
+            cNb_inv = pinv(cNb);
+            matM = cNb_inv * cSb;
+            % Use eig with 'vector' for eigenvalues and ensure proper sorting
+            [evecs, evals] = eig((matM + matM')/2, 'vector');  % Force symmetry
             [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
             basis = evecs(:, idx);
-            mags = abs(evals(idx));
+            mags = evals(idx);
         elseif V == 2
             [evecs, evals] = eig(cNb, 'vector');  % Use vector output
             [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
             basis = evecs(:, idx);
-            mags = abs(evals(idx));
+            mags = evals(idx);
         elseif V == 3
             trial_avg = mean(data, 3);  % shape [nunits x nconds]
             cov_matrix = cov(trial_avg.');  % shape [nunits x nunits]
             [evecs, evals] = eig(cov_matrix, 'vector');  % Use vector output
             [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
             basis = evecs(:, idx);
-            mags = abs(evals(idx));
+            mags = evals(idx);
         else
             % V == 4 => random orthonormal
             rng('default');  % Reset to default generator
