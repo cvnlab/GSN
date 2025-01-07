@@ -106,28 +106,6 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
 
     return train_data, test_data, ground_truth
 
-
-def _householder_reflection(v):
-    """
-    Compute a Householder reflection matrix that maps v to [|v|, 0, ..., 0].
-    Used internally for some alignment steps. (Currently unused.)
-    """
-    v = v.copy()
-    n = len(v)
-    v_norm = np.linalg.norm(v)
-    if v_norm < 1e-10:
-        return np.eye(n)
-    v /= v_norm
-    e1 = np.zeros(n)
-    e1[0] = 1.0
-    u = v - e1
-    u_norm = np.linalg.norm(u)
-    if u_norm < 1e-10:
-        return np.eye(n)
-    u /= u_norm
-    return np.eye(n) - 2 * np.outer(u, u)
-
-
 def _adjust_alignment(U_signal, U_noise, alpha, k, tolerance=1e-9):
     """
     Adjust alignment between the top-k columns of U_signal and U_noise,
