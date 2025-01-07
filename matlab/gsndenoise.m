@@ -661,20 +661,24 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
         if isnumeric(V) && isscalar(V)
             if V == 0
                 evals = eig(gsn_results.cSb);
-                magnitudes = evals;  % Keep original order
+                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
+                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
             elseif V == 1
                 cNb_inv = pinv(gsn_results.cNb);
                 matM = cNb_inv * gsn_results.cSb;
                 evals = eig(matM);
-                magnitudes = evals;
+                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
+                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
             elseif V == 2
                 evals = eig(gsn_results.cNb);
-                magnitudes = evals;
+                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
+                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
             elseif V == 3
                 trial_avg = mean(data, 3);
                 cov_mat = cov(trial_avg.');
                 evals = eig(cov_mat);
-                magnitudes = evals;
+                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
+                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
             else
                 magnitudes = ones(size(basis,2),1);
             end
@@ -682,12 +686,14 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
             trial_avg = mean(data, 3);
             proj = (trial_avg.') * basis;
             magnitudes = var(proj, 0, 1).';
+            [magnitudes, sort_idx] = sort(abs(magnitudes), 'descend');
         end
     else
         % Variance-based
         trial_avg = mean(data, 3);
         proj = (trial_avg.') * basis;
         magnitudes = var(proj, 0, 1).';
+        [magnitudes, sort_idx] = sort(abs(magnitudes), 'descend');
     end
 
     threshold_val = mag_frac * max(abs(magnitudes));
