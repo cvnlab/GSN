@@ -3,43 +3,45 @@ function [results] = gsndenoise(data, V, opt)
 %
 % Algorithm Details:
 % -----------------
-% The GSN denoising algorithm works by identifying dimensions in the neural data that contain
-% primarily signal rather than noise. It does this in several steps:
+% The GSN denoising algorithm works by identifying and separating dimensions in the neural
+% data that correspond to signal and noise. The algorithm works as follows:
 %
-% 1. Signal and Noise Estimation:
-%     - For each condition, computes mean response across trials (signal estimate)
-%     - For each condition, computes variance across trials (noise estimate)
-%     - Builds signal (cSb) and noise (cNb) covariance matrices across conditions
+% 1. Signal and Noise Estimation
+%     - The parameters of signal and noise multivariate gaussians are
+%     estimated (means and covariances; see performgsn.m)
 %
-% 2. Basis Selection (<V> parameter):
+% 2. Denoising Basis Selection (<V> parameter):
 %     - V=0: Uses eigenvectors of signal covariance (cSb)
 %     - V=1: Uses eigenvectors of signal covariance transformed by inverse noise covariance
 %     - V=2: Uses eigenvectors of noise covariance (cNb)
-%     - V=3: Uses PCA on trial-averaged data
+%     - V=3: Uses naive PCA on trial-averaged data
 %     - V=4: Uses random orthonormal basis
 %     - V=matrix: Uses user-supplied orthonormal basis
 %
 % 3. Dimension Selection:
-%     The algorithm must decide how many dimensions to keep. This can be done in two ways:
+%     The algorithm must decide how many dimensions to retain and call "signal". 
+%     This can be done in two ways:
 %
-%     a) Cross-validation (<cv_mode> >= 0):
+%     a) Cross-validation (<cv_mode> = 0 or 1):
 %         - Splits trials into training and testing sets
 %         - For training set:
 %             * Projects data onto different numbers of basis dimensions
 %             * Creates denoising matrix for each dimensionality
 %         - For test set:
 %             * Measures how well denoised training data predicts test data
-%             * Uses mean squared error (MSE) as prediction metric
+%             * Uses mean squared error (MSE) as prediction metric by
+%             default
 %         - Selects number of dimensions that gives best prediction
 %         - Can be done per-unit or for whole population
 %
 %     b) Magnitude Thresholding (<cv_mode> = -1):
 %         - Computes "magnitude" for each dimension:
-%             * Either eigenvalues (signal strength)
-%             * Or variance explained in the data
+%             * Either the eigenvalues of the denoising basis (proxy for amount of signal)
+%             * Or signal variance estimated from the data projected into
+%             the basis
 %         - Sets threshold as fraction of maximum magnitude
 %         - Keeps dimensions above threshold either:
-%             * Contiguously from strongest dimension
+%             * Contiguously from strongest (leftmost) dimension
 %             * Or any dimension above threshold
 %
 % 4. Denoising:
@@ -48,7 +50,7 @@ function [results] = gsndenoise(data, V, opt)
 %         * Averages data across trials
 %         * Projects through denoising matrix
 %     - For single-trial denoising:
-%         * Projects each trial through denoising matrix
+%         * Projects each trial through denoising matrix, separately
 %     - Returns denoised data and diagnostic information
 %
 % -------------------------------------------------------------------------
@@ -179,13 +181,6 @@ function [results] = gsndenoise(data, V, opt)
 %   opt.cv_mode = -1;  % Use magnitude thresholding
 %   opt.mag_frac = 0.1;  % Keep components > 10% of max
 %   opt.mag_mode = 0;  % Use contiguous dimensions
-%   results = gsndenoise(data, 0, opt);
-%
-%   % Unit-wise cross-validation
-%   opt = struct();
-%   opt.cv_mode = 0;  % Leave-one-out CV
-%   opt.cv_threshold_per = 'unit';  % Unit-specific thresholds
-%   opt.cv_thresholds = [1, 2, 3];  % Test these dimensions
 %   results = gsndenoise(data, 0, opt);
 %
 %   % Single-trial denoising with population threshold
@@ -366,8 +361,7 @@ function [results] = gsndenoise(data, V, opt)
         mags = var(proj_data, 0, 1).';  % variance along conditions
     end
 
-    % Store the full basis and magnitudes
-    fullbasis = basis;
+    % Store the magnitudes
     stored_mags = mags;
 
     % 6) Default cross-validation thresholds if not provided
@@ -537,18 +531,20 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsu
         if size(avg_scores, 2) == 1
             avg_scores = avg_scores(:);  % Convert to column vector if only one unit
         end
+        
+        % Safety note: avg_scores should always have nunits columns since it comes from
+        % cv_scores which is [nthresholds x ntrials x nunits]. max() will always return
+        % a valid index since avg_scores has nthresholds rows. We keep a simplified
+        % safety check just in case of data corruption.
         best_thresh_unitwise = zeros(1, nunits);
         for unit_i = 1:nunits
             if size(avg_scores, 2) >= unit_i
                 [~, best_idx] = max(avg_scores(:, unit_i));
-                if ~isempty(best_idx) && best_idx <= length(thresholds)
-                    best_thresh_unitwise(unit_i) = thresholds(best_idx);
-                else
-                    best_thresh_unitwise(unit_i) = thresholds(1);
-                end
+                best_thresh_unitwise(unit_i) = thresholds(best_idx);
             else
-                % If we don't have enough scores, use the first threshold
-                best_thresh_unitwise(unit_i) = thresholds(1);
+                % Fallback in case of data corruption: use most conservative threshold
+                % (keep all dimensions to minimally alter the data)
+                best_thresh_unitwise(unit_i) = thresholds(end);
             end
         end
         best_threshold = best_thresh_unitwise;
