@@ -273,8 +273,6 @@ function [results] = gsndenoise(data, V, opt)
         opt.denoisingtype = 0;
     end
 
-    gsn_results = [];
-
     % 5) If V is an integer => glean basis from GSN results
     if isnumeric(V) && isscalar(V)
         if ~ismember(V, [0, 1, 2, 3, 4])
@@ -289,10 +287,7 @@ function [results] = gsndenoise(data, V, opt)
         gsn_results = performgsn(data, gsn_opt);
         cSb = gsn_results.cSb;
         cNb = gsn_results.cNb;
-
-        % Helper for pseudo-inversion
-        inv_or_pinv = @(mat) pinv(mat);
-
+        
         if V == 0
             % Just eigen-decompose cSb
             [evecs, evals] = eig(cSb, 'vector');  % Use vector output for eigenvalues
@@ -314,7 +309,9 @@ function [results] = gsndenoise(data, V, opt)
             basis = evecs(:, idx);
             mags = evals(idx);
         elseif V == 3
-            trial_avg = mean(data, 3);  % shape [nunits x nconds]
+            trial_avg = mean(data, 3);  % [nunits x nconds]
+            results.pca_means = mean(trial_avg, 2);  % Store means for later
+            trial_avg = trial_avg - results.pca_means;  % Center the data
             cov_matrix = cov(trial_avg.');  % shape [nunits x nunits]
             [evecs, evals] = eig(cov_matrix, 'vector');  % Use vector output
             [~, idx] = sort(abs(evals), 'descend');  % Sort by magnitude
@@ -395,7 +392,7 @@ function [results] = gsndenoise(data, V, opt)
     % 7) Decide cross-validation or magnitude-threshold
     if opt.cv_mode >= 0
         [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis_out, signalsubspace, dimreduce] = ...
-            perform_cross_validation(data, basis, opt);
+            perform_cross_validation(data, basis, opt, results);
 
         results.denoiser = denoiser;
         results.cv_scores = cv_scores;
@@ -410,7 +407,7 @@ function [results] = gsndenoise(data, V, opt)
 
     else
         [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis_out, signalsubspace, dimreduce, mags_out, dimsretained] = ...
-            perform_magnitude_thresholding(data, basis, gsn_results, opt, V);
+            perform_magnitude_thresholding(data, basis, results, opt, stored_mags);
 
         results.denoiser = denoiser;
         results.cv_scores = cv_scores;
@@ -425,7 +422,7 @@ function [results] = gsndenoise(data, V, opt)
 end
 
 
-function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce] = perform_cross_validation(data, basis, opt)
+function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis_out, signalsubspace, dimreduce] = perform_cross_validation(data, basis, opt, results)
 % PERFORM_CROSS_VALIDATION Perform cross-validation to determine optimal denoising dimensions.
 %
 % Uses cross-validation to determine how many dimensions to retain for denoising:
@@ -456,6 +453,8 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsu
 %     <denoisingtype> - scalar.
 %         0: trial-averaged denoising
 %         1: single-trial denoising
+%   <results> - struct. Main results structure containing:
+%       <pca_means> - shape [nunits x 1]. Mean values for PCA case, if applicable.
 %
 % Returns:
 %   <denoiser> - shape [nunits x nunits]. Matrix that projects data onto denoised space.
@@ -564,15 +563,25 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsu
         % Trial-averaged denoising
         trial_avg = mean(data, 3);  % [nunits x nconds]
         denoiseddata = (trial_avg' * denoiser)';
+        
+        % Add back the means for the PCA case
+        if isfield(results, 'pca_means')
+            denoiseddata = denoiseddata + results.pca_means;
+        end
     else
         % Single-trial denoising
         denoiseddata = zeros(size(data));
         for t = 1:ntrials
             denoiseddata(:, :, t) = (data(:, :, t)' * denoiser)';
+            
+            % Add back the means for the PCA case
+            if isfield(results, 'pca_means')
+                denoiseddata(:, :, t) = denoiseddata(:, :, t) + results.pca_means;
+            end
         end
     end
 
-    fullbasis = basis;
+    fullbasis_out = basis;
     if strcmp(threshold_per, 'population')
         signalsubspace = basis(:, 1:safe_thr);
         % Project data onto signal subspace
@@ -593,7 +602,7 @@ end
 
 
 function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained] = ...
-    perform_magnitude_thresholding(data, basis, gsn_results, opt, V)
+    perform_magnitude_thresholding(data, basis, results, opt, mags)
 % PERFORM_MAGNITUDE_THRESHOLDING Select dimensions using magnitude thresholding.
 %
 % Implements the magnitude thresholding procedure for GSN denoising.
@@ -617,9 +626,8 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
 % Inputs:
 %   <data> - shape [nunits x nconds x ntrials]. Neural response data to denoise.
 %   <basis> - shape [nunits x dims]. Orthonormal basis for denoising.
-%   <gsn_results> - struct. Results from GSN computation containing:
-%       <cSb> - shape [nunits x nunits]. Signal covariance matrix.
-%       <cNb> - shape [nunits x nunits]. Noise covariance matrix.
+%   <results> - struct. Main results structure containing:
+%       <pca_means> - shape [nunits x 1]. Mean values for PCA case.
 %   <opt> - struct with fields:
 %       <mag_type> - scalar. How to obtain component magnitudes:
 %           0: use eigenvalues (<V> must be 0, 1, 2, or 3)
@@ -631,7 +639,7 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
 %       <denoisingtype> - scalar. Type of denoising:
 %           0: trial-averaged
 %           1: single-trial
-%   <V> - scalar or matrix. Basis selection mode or custom basis.
+%   <mags> - shape [dims x 1]. Pre-computed magnitudes from basis selection.
 %
 % Returns:
 %   <denoiser> - shape [nunits x nunits]. Matrix that projects data onto denoised space.
@@ -655,43 +663,26 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
 
     % Compute magnitudes
     if mag_type == 0
-        % Eigenvalue-based
-        if isnumeric(V) && isscalar(V)
-            if V == 0
-                evals = eig(gsn_results.cSb);
-                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
-                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
-            elseif V == 1
-                cNb_inv = pinv(gsn_results.cNb);
-                matM = cNb_inv * gsn_results.cSb;
-                evals = eig(matM);
-                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
-                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
-            elseif V == 2
-                evals = eig(gsn_results.cNb);
-                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
-                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
-            elseif V == 3
-                trial_avg = mean(data, 3);
-                cov_mat = cov(trial_avg.');
-                evals = eig(cov_mat);
-                [magnitudes, sort_idx] = sort(abs(evals), 'descend');
-                magnitudes = evals(sort_idx);  % Keep original signs but sorted by magnitude
-            else
-                magnitudes = ones(size(basis,2),1);
-            end
+        % Check if we have pre-computed magnitudes that aren't all ones
+        % (all ones would indicate V=4 random basis case)
+        if ~all(mags == 1)
+            % Use pre-computed magnitudes from basis selection
+            magnitudes = mags;
         else
+            % For random basis or user-supplied basis, compute signal variance
             trial_avg = mean(data, 3);
             proj = (trial_avg.') * basis;
             magnitudes = var(proj, 0, 1).';
-            [magnitudes, sort_idx] = sort(abs(magnitudes), 'descend');
+            [~, sort_idx] = sort(abs(magnitudes), 'descend');  % Sort by magnitude
+            magnitudes = magnitudes(sort_idx);  % Keep original signs but sorted by magnitude
         end
     else
-        % Variance-based
+        % Variance-based threshold
         trial_avg = mean(data, 3);
         proj = (trial_avg.') * basis;
         magnitudes = var(proj, 0, 1).';
-        [magnitudes, sort_idx] = sort(abs(magnitudes), 'descend');
+        [~, sort_idx] = sort(abs(magnitudes), 'descend');  % Sort by magnitude
+        magnitudes = magnitudes(sort_idx);  % Keep original signs but sorted by magnitude
     end
 
     threshold_val = mag_frac * max(abs(magnitudes));
@@ -748,11 +739,21 @@ function [denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspa
         % Trial-averaged denoising
         trial_avg = mean(data, 3);
         denoiseddata = (trial_avg' * denoiser)';
+        
+        % Add back the means for the PCA case
+        if isfield(results, 'pca_means')
+            denoiseddata = denoiseddata + results.pca_means;
+        end
     else
         % Single-trial denoising
         denoiseddata = zeros(size(data));
         for t = 1:ntrials
             denoiseddata(:, :, t) = (data(:, :, t)' * denoiser)';
+            
+            % Add back the means for the PCA case
+            if isfield(results, 'pca_means')
+                denoiseddata(:, :, t) = denoiseddata(:, :, t) + results.pca_means;
+            end
         end
     end
 
