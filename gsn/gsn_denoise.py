@@ -243,6 +243,19 @@ def gsn_denoise(data, V=None, opt=None):
         if opt['cv_threshold_per'] not in ['unit', 'population']:
             raise KeyError("cv_threshold_per must be 'unit' or 'population'")
 
+    # Initialize return dictionary with None values
+    results = {
+        'denoiser': None,
+        'cv_scores': None,
+        'best_threshold': None,
+        'denoiseddata': None,
+        'fullbasis': None,
+        'signalsubspace': None,
+        'dimreduce': None,
+        'mags': None,
+        'dimsretained': None
+    }
+
     # Check if basis vectors are unit length and normalize if not
     if isinstance(V, np.ndarray):
         # First check and fix unit length
@@ -265,8 +278,6 @@ def gsn_denoise(data, V=None, opt=None):
     opt.setdefault('mag_frac', 0.01)
     opt.setdefault('mag_mode', 0)
     opt.setdefault('denoisingtype', 0)  # Default to trial-averaged denoising
-
-    gsn_results = None
 
     # 5) If V is an integer => glean basis from GSN results
     if isinstance(V, int):
@@ -309,14 +320,16 @@ def gsn_denoise(data, V=None, opt=None):
             magnitudes = np.abs(evals)  # No need to flip, already sorted
         elif V == 3:
             trial_avg = np.mean(data, axis=2)
+            results['pca_means'] = np.mean(trial_avg, axis=0)
+            trial_avg = trial_avg - results['pca_means']
+            
             cov_mat = np.cov(trial_avg)
             evals, evecs = np.linalg.eigh(cov_mat)
-            # Sort by absolute value of eigenvalues
             idx = np.argsort(np.abs(evals))[::-1]
             evals = evals[idx]
             evecs = evecs[:, idx]
             basis = evecs
-            magnitudes = np.abs(evals)  # No need to flip, already sorted
+            magnitudes = np.abs(evals)
         else:  # V == 4
             # Generate a random basis with same dimensions as eigenvector basis
             rand_mat = np.random.randn(nunits, nunits)  # Start with square matrix
@@ -356,6 +369,10 @@ def gsn_denoise(data, V=None, opt=None):
     fullbasis = basis.copy()
     stored_mags = magnitudes.copy()  # Store magnitudes for later use
 
+    # Update results with computed values
+    results['fullbasis'] = fullbasis
+    results['mags'] = stored_mags
+
     # 6) Default cross-validation thresholds if not provided
     if 'cv_thresholds' not in opt:
         opt['cv_thresholds'] = np.arange(1, basis.shape[1] + 1)
@@ -369,23 +386,10 @@ def gsn_denoise(data, V=None, opt=None):
         if not np.all(np.diff(thresholds) > 0):
             raise ValueError("cv_thresholds must be in sorted order with unique values")
 
-    # Initialize return dictionary with None values
-    results = {
-        'denoiser': None,
-        'cv_scores': None,
-        'best_threshold': None,
-        'denoiseddata': None,
-        'fullbasis': fullbasis,
-        'signalsubspace': None,
-        'dimreduce': None,
-        'mags': None,
-        'dimsretained': None
-    }
-
     # 7) Decide cross-validation or magnitude-threshold
-    # We'll treat negative or zero cv_mode as "do magnitude thresholding."
+    # We'll treat negative cv_mode as "do magnitude thresholding."
     if opt['cv_mode'] >= 0:
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = perform_cross_validation(data, basis, opt)
+        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce = perform_cross_validation(data, basis, opt, results=None)
         
         # Update results dictionary
         results.update({
@@ -403,7 +407,7 @@ def gsn_denoise(data, V=None, opt=None):
                 'dimreduce': dimreduce
             })
     else:
-        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce, mags, dimsretained = perform_magnitude_thresholding(data, basis, gsn_results, opt, V)
+        denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce, mags, dimsretained = perform_magnitude_thresholding(data, basis, opt, results)
         
         # Update results dictionary with all magnitude thresholding returns
         results.update({
@@ -420,7 +424,7 @@ def gsn_denoise(data, V=None, opt=None):
 
     return results
 
-def perform_cross_validation(data, basis, opt):
+def perform_cross_validation(data, basis, opt, results=None):
     """
     Perform cross-validation to determine optimal denoising dimensions.
 
@@ -544,6 +548,10 @@ def perform_cross_validation(data, basis, opt):
         denoiseddata = np.zeros_like(data)
         for t in range(ntrials):
             denoiseddata[:, :, t] = (data[:, :, t].T @ denoiser).T
+            
+    # add back the means for the PCA case
+    if results is not None and 'pca_means' in results:
+        denoiseddata += results['pca_means']
 
     # Calculate additional return values
     fullbasis = basis.copy()
@@ -564,7 +572,7 @@ def perform_cross_validation(data, basis, opt):
 
     return denoiser, cv_scores, best_threshold, denoiseddata, fullbasis, signalsubspace, dimreduce
 
-def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
+def perform_magnitude_thresholding(data, basis, opt, results=None):
     """
     Select dimensions using magnitude thresholding.
 
@@ -577,9 +585,9 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     - Selection of any dimension above threshold
 
     Algorithm Details:
-    1. Compute magnitudes for each dimension:
-       - Either eigenvalues from decomposition
-       - Or variance explained in the data
+    1. Get magnitudes either:
+       - From pre-computed eigenvalues in results (mag_type=0)
+       - Or compute signal variance in basis (mag_type=1)
     2. Set threshold as fraction of maximum magnitude
     3. Select dimensions either:
        - Contiguously from strongest dimension
@@ -590,12 +598,9 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     -----------
     <data> - shape (nunits, nconds, ntrials). Neural response data to denoise.
     <basis> - shape (nunits, dims). Orthonormal basis for denoising.
-    <gsn_results> - dict. Results from GSN computation containing:
-        <cSb> - shape (nunits, nunits). Signal covariance matrix.
-        <cNb> - shape (nunits, nunits). Noise covariance matrix.
     <opt> - dict with fields:
         <mag_type> - scalar. How to obtain component magnitudes:
-            0: use eigenvalues (<V> must be 0, 1, 2, or 3)
+            0: use pre-computed eigenvalues from results
             1: use signal variance computed from data
         <mag_frac> - scalar. Fraction of maximum magnitude to use as threshold.
         <mag_mode> - scalar. How to select dimensions:
@@ -604,7 +609,7 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
         <denoisingtype> - scalar. Type of denoising:
             0: trial-averaged
             1: single-trial
-    <V> - scalar or matrix. Basis selection mode or custom basis.
+    <results> - dict containing pre-computed magnitudes in results['mags'] if mag_type=0
 
     Returns:
     --------
@@ -619,67 +624,36 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
     <magnitudes> - shape (1, dims). Component magnitudes used for thresholding.
     <dimsretained> - scalar. Number of dimensions retained.
     """
-    
     nunits, nconds, ntrials = data.shape
     mag_type = opt.get('mag_type', 0)
     mag_frac = opt.get('mag_frac', 0.01)
     mag_mode = opt.get('mag_mode', 0)
-    threshold_per = opt.get('cv_threshold_per', 'unit')
     denoisingtype = opt.get('denoisingtype', 0)
 
     cv_scores = np.array([])  # Not used in magnitude thresholding
-
+    
     # Get magnitudes based on mag_type
     if mag_type == 0:
-        # Eigen-based threshold
-        if isinstance(V, (int, np.integer)):
-            if V == 0:
-                # Get both eigenvalues and eigenvectors
-                evals, evecs = np.linalg.eigh(gsn_results['cSb'])
-                # Sort by magnitude in descending order
-                sort_idx = np.argsort(-np.abs(evals))  # Descending order
-                evals = evals[sort_idx]
-                evecs = evecs[:, sort_idx]
-                magnitudes = np.abs(evals)
-                basis = evecs  # Use sorted eigenvectors as basis
-            elif V == 1:
-                cNb_inv = np.linalg.pinv(gsn_results['cNb'])
-                matM = cNb_inv @ gsn_results['cSb']
-                evals, evecs = np.linalg.eigh(matM)
-                sort_idx = np.argsort(-np.abs(evals))  # Descending order
-                evals = evals[sort_idx]
-                evecs = evecs[:, sort_idx]
-                magnitudes = np.abs(evals)
-                basis = evecs
-            elif V == 2:
-                evals, evecs = np.linalg.eigh(gsn_results['cNb'])
-                sort_idx = np.argsort(-np.abs(evals))  # Descending order
-                evals = evals[sort_idx]
-                evecs = evecs[:, sort_idx]
-                magnitudes = np.abs(evals)
-                basis = evecs
-            elif V == 3:
-                trial_avg = np.mean(data, axis=2)
-                cov_mat = np.cov(trial_avg)
-                evals, evecs = np.linalg.eigh(cov_mat)
-                sort_idx = np.argsort(-np.abs(evals))  # Descending order
-                evals = evals[sort_idx]
-                evecs = evecs[:, sort_idx]
-                magnitudes = np.abs(evals)
-                basis = evecs
-            else:  # V == 4
-                magnitudes = np.ones(basis.shape[1])
-        else:
-            # For user-supplied basis, compute projection variances
-            trial_avg = np.mean(data, axis=2)
-            proj = trial_avg.T @ basis
-            magnitudes = np.var(proj, axis=0, ddof=1)
+        # Use pre-computed magnitudes from results
+        magnitudes = results['mags']
     else:
         # Variance-based threshold in user basis
-        trial_avg = np.mean(data, axis=2)
-        proj = trial_avg.T @ basis
-        magnitudes = np.var(proj, axis=0, ddof=1)
+        # Initialize list to store signal variances
+        sigvars = []
 
+        # Compute signal variance for each basis dimension
+        for i in range(basis.shape[1]):
+            this_eigv = basis[:, i]  # Select the i-th eigenvector
+            proj_data = np.dot(data.transpose(1, 2, 0), this_eigv)  # Project data into this eigenvector's subspace
+
+            # Compute signal variance (using same computation as in noise ceiling)
+            noisevar = np.mean(np.std(proj_data, axis=1, ddof=1) ** 2)
+            datavar = np.std(np.mean(proj_data, axis=1), ddof=1) ** 2
+            signalvar = np.maximum(datavar - noisevar / proj_data.shape[1], 0)  # Ensure non-negative variance
+            sigvars.append(float(signalvar))
+
+        magnitudes = np.array(sigvars)
+    
     # Determine threshold as fraction of maximum magnitude
     threshold_val = mag_frac * np.max(np.abs(magnitudes))
     surviving = np.abs(magnitudes) >= threshold_val
@@ -699,7 +673,6 @@ def perform_magnitude_thresholding(data, basis, gsn_results, opt, V):
 
     if mag_mode == 0:  # Contiguous from left
         # For contiguous from left, we want the leftmost block
-        # Find the first gap after the start
         if len(surv_idx) == 1:
             dimsretained = 1
             best_threshold = surv_idx
