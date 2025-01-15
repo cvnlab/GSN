@@ -77,6 +77,7 @@ def rsa_noise_ceiling(data, opt = None):
             the faster the execution time, but the less accurate the results. Default: 10.
         maxsimnum (int, optional): The maximum number of simulations to perform for the
             data-splitting simulations. Default: 1000.
+        random_seed (int, optional): Random seed for reproducibility. Default: 42.
 
     Notes:
     - If `comparefun` ever returns NaN, we automatically replace these cases with 0.
@@ -116,6 +117,7 @@ def rsa_noise_ceiling(data, opt = None):
                 0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2025/01/15 - add random seed control for reproducibility
     - 2024/09/11 - misc. bug fixes
     - 2024/08/24 - add results['numiters']
     - 2024/01/05:
@@ -139,9 +141,10 @@ def rsa_noise_ceiling(data, opt = None):
         Default: 0.
     """
 
-    # Initialize opt as an empty dictionary if it is None
+    # Set random seed for reproducibility
     if opt is None:
         opt = {}
+    np.random.seed(opt.get('random_seed', 42))
 
     # Set default values for opt
     opt.setdefault('wantverbose', 1)
