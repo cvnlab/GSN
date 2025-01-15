@@ -11,6 +11,7 @@ def perform_gsn(data, opt=None):
     opt (dict, optional): A dictionary with the following optional fields:
         wantverbose (bool, optional): Whether to print status statements. Default is True.
         wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is True.
+        random_seed (int, optional): Random seed for reproducibility. Default is 42.
 
     Returns:
     results: A dictionary with the results containing:
@@ -38,15 +39,18 @@ def perform_gsn(data, opt=None):
                    (2) cSb no longer has the scaling baked in and instead we
                        create a separate temporary variable cSb_rsa;
                    (3) remove the rapprox output
+    - 2025/01/15 - add random seed control for reproducibility
 
     Example:
     data = np.random.randn(100, 40, 4) * 2 + np.random.randn(100, 40, 4)
     results = perform_gsn(data)
     """
-
-        # Set default options if not provided
+    # Set random seed for reproducibility
     if opt is None:
         opt = {}
+    np.random.seed(opt.get('random_seed', 42))
+
+    # Set default options if not provided
     if 'wantverbose' not in opt or opt['wantverbose'] is None:
         opt['wantverbose'] = 1
     if 'wantshrinkage' not in opt or opt['wantshrinkage'] is None:
