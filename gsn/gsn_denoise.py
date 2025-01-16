@@ -104,13 +104,13 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
           Default: negative_mse_columns. 
         <mag_type> - scalar. Indicates how to obtain component magnitudes.
           Matters only when <cv_mode> is -1.
-          0 means use eigenvalues (<V> must be 0, 1, 2, or 3)
-          1 means use signal variance computed from the data
+          0 means use signal variance computed from the data
+          1 means use eigenvalues (<V> must be 0, 1, 2, or 3)
           Default: 0.
         <mag_frac> - scalar. Indicates a fraction of the maximum magnitude
           component. Matters only when <cv_mode> is -1.
           Default: 0.01.
-        <mag_mode> - scalar. Indicates how to select dimensions. Matters only 
+        <mag_selection_mode> - scalar. Indicates how to select dimensions. Matters only 
           when <cv_mode> is -1.
           0 means use the smallest number of dimensions that all survive threshold.
             In this case, the dimensions returned are all contiguous from the left.
@@ -178,7 +178,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
     -------------------------------------------------------------------------
 
         # Basic usage with default options
-        data = np.random.randn(100, 200, 3)  # 100 voxels, 200 conditions, 3 trials
+        data = np.random.randn(100, 200, 3)  # 100 units, 200 conditions, 3 trials
         opt = {
             'cv_mode': 0,  # n-1 train / 1 test split
             'cv_threshold_per': 'unit',  # Same threshold for all units
@@ -192,7 +192,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
         opt = {
             'cv_mode': -1,  # Use magnitude thresholding
             'mag_frac': 0.1,  # Keep components > 10% of max
-            'mag_mode': 0  # Use contiguous dimensions
+            'mag_selection_mode': 0  # Use contiguous dimensions
         }
         results = gsn_denoise(data, 0, opt)
 
@@ -284,7 +284,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
     opt.setdefault('cv_threshold_per', 'unit')
     opt.setdefault('mag_type', 0)
     opt.setdefault('mag_frac', 0.01)
-    opt.setdefault('mag_mode', 0)
+    opt.setdefault('mag_selection_mode', 0)
     opt.setdefault('denoisingtype', 0)  # Default to trial-averaged denoising
     
     # compute the unit means since they are removed during denoising and will be added back
@@ -314,6 +314,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             evecs = evecs[:, idx]
             basis = evecs
             magnitudes = np.abs(evals)  # No need to flip, already sorted
+            results['basis_source'] = cSb
         elif V == 1:
             cNb_inv = inv_or_pinv(cNb)
             transformed_cov = cNb_inv @ cSb
@@ -326,6 +327,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             evecs = evecs[:, idx]
             basis = evecs
             magnitudes = np.abs(evals)  # No need to flip, already sorted
+            results['basis_source'] = transformed_cov
         elif V == 2:
             evals, evecs = np.linalg.eigh(cNb)
             # Sort by absolute value of eigenvalues
@@ -334,6 +336,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             evecs = evecs[:, idx]
             basis = evecs
             magnitudes = np.abs(evals)  # No need to flip, already sorted
+            results['basis_source'] = cNb
         elif V == 3:
             # de-mean each row of trial_avg
             trial_avg = (trial_avg.T - results['unit_means']).T
@@ -344,6 +347,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             evecs = evecs[:, idx]
             basis = evecs
             magnitudes = np.abs(evals)
+            results['basis_source'] = cov_mat
         else:  # V == 4
             # Generate a random basis with same dimensions as eigenvector basis
             rand_mat = np.random.randn(nunits, nunits)  # Start with square matrix
@@ -351,6 +355,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             # Only keep first nunits columns to match eigenvector basis dimensions
             basis = basis[:, :nunits]
             magnitudes = np.ones(nunits)  # No meaningful magnitudes for random basis
+            results['basis_source'] = None  # No meaningful source matrix for random basis
     else:
         # If V not int => must be a numpy array
         if not isinstance(V, np.ndarray):
@@ -378,6 +383,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
         trial_avg_reshaped = trial_avg.T  # shape (ncond, nvox)
         proj_data = trial_avg_reshaped @ basis  # shape (ncond, basis_dim)
         magnitudes = np.var(proj_data, axis=0, ddof=1)  # variance along conditions for each basis dimension
+        results['basis_source'] = None
         
     # Store the full basis and magnitudes for return
     fullbasis = basis.copy()
@@ -430,7 +436,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             'best_threshold': best_threshold,
             'denoiseddata': denoiseddata,
             'fullbasis': fullbasis,
-            'mags': stored_mags,
+            'mags': mags,
             'dimsretained': dimsretained,
             'signalsubspace': signalsubspace,
             'dimreduce': dimreduce
@@ -624,8 +630,8 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
 
     Algorithm Details:
     1. Get magnitudes either:
-       - From pre-computed eigenvalues in results (mag_type=0)
-       - Or compute signal variance in basis (mag_type=1)
+       - From signal variance of the data projected into the basis (mag_type=0)
+       - Or precomputed basis eigenvalues (mag_type=1)
     2. Set threshold as fraction of maximum magnitude
     3. Select dimensions either:
        - Contiguously from strongest dimension
@@ -638,16 +644,16 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     <basis> - shape (nunits, dims). Orthonormal basis for denoising.
     <opt> - dict with fields:
         <mag_type> - scalar. How to obtain component magnitudes:
-            0: use pre-computed eigenvalues from results
-            1: use signal variance computed from data
+            0: use signal variance computed from data
+            1: use pre-computed eigenvalues from results
         <mag_frac> - scalar. Fraction of maximum magnitude to use as threshold.
-        <mag_mode> - scalar. How to select dimensions:
+        <mag_selection_mode> - scalar. How to select dimensions:
             0: contiguous from strongest dimension
             1: any dimension above threshold
         <denoisingtype> - scalar. Type of denoising:
             0: trial-averaged
             1: single-trial
-    <results> - dict containing pre-computed magnitudes in results['mags'] if mag_type=0
+    <results> - dict containing pre-computed magnitudes in results['mags'] if mag_type=1
 
     Returns:
     --------
@@ -665,13 +671,13 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     nunits, nconds, ntrials = data.shape
     mag_type = opt['mag_type']
     mag_frac = opt['mag_frac']
-    mag_mode = opt['mag_mode']
+    mag_selection_mode = opt['mag_selection_mode']
     denoisingtype = opt['denoisingtype']
 
     cv_scores = np.array([])  # Not used in magnitude thresholding
     
     # Get magnitudes based on mag_type
-    if mag_type == 0:
+    if mag_type == 1:
         # Use pre-computed magnitudes from results
         magnitudes = results['mags']
     else:
@@ -697,7 +703,7 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     threshold_val = mag_frac * np.max(np.abs(magnitudes))
     surviving = np.abs(magnitudes) >= threshold_val
     
-    # Find dimensions to retain based on mag_mode
+    # Find dimensions to retain based on mag_selection_mode
     surv_idx = np.where(surviving)[0]
     
     if len(surv_idx) == 0:
@@ -710,7 +716,7 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
         best_threshold = np.array([])
         return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
 
-    if mag_mode == 0:  # Contiguous from left
+    if mag_selection_mode == 0:  # Contiguous from left
         # For contiguous from left, we want the leftmost block
         if len(surv_idx) == 1:
             dimsretained = 1
@@ -925,7 +931,23 @@ def plot_diagnostic_figures(data, results, test_data=None):
         V_desc = str(V_type)
         
     # Create title text with data shape and GSN application info
-    title_text = f"Data shape: {nunits} voxels × {nconds} conditions × {ntrials} trials    |    V = {V_desc}\n"
+    title_text = f"Data shape: {nunits} units × {nconds} conditions × {ntrials} trials    |    V = {V_desc}\n"
+    
+    # Add cv_mode and magnitude thresholding info to title
+    cv_mode = results.get('opt', {}).get('cv_mode', 0)
+    if cv_mode == -1:
+        mag_type = results.get('opt', {}).get('mag_type', 0)
+        mag_selection_mode = results.get('opt', {}).get('mag_selection_mode', 0)
+        mag_frac = results.get('opt', {}).get('mag_frac', 0.01)
+        mag_frac_str = f"{mag_frac:.3f}".rstrip('0').rstrip('.')
+        title_text = (f"Data shape: {nunits} units × {nconds} conditions × {ntrials} trials    |    "
+                     f"V = {V_desc}    |    cv_mode = {cv_mode}    |    "
+                     f"mag_type = {mag_type}, mag_mode = {mag_selection_mode}, mag_frac = {mag_frac_str}\n")
+    else:
+        threshold_per = results.get('opt', {}).get('cv_threshold_per', 'unit')
+        title_text = (f"Data shape: {nunits} units × {nconds} conditions × {ntrials} trials    |    "
+                     f"V = {V_desc}    |    cv_mode = {cv_mode}    |    thresh = {threshold_per}\n")
+    
     if test_data is None:
         title_text += f"gsn_denoise.py applied to all {ntrials} trials"
     else:
@@ -971,24 +993,54 @@ def plot_diagnostic_figures(data, results, test_data=None):
         if best_threshold is None:
             best_threshold = results.get('dimsretained', [])
 
-        # Plot 1: Full basis matrix (top left)
+        # Plot 1: basis source matrix (top left)
         ax1 = fig.add_subplot(gs[0, 0])
+        V = results.get('V')
+        
+        if isinstance(V, int):
+            if V in [0, 1, 2, 3]:
+                # Show the basis source matrix
+                matrix_to_show = results['basis_source']
+                if V == 0:
+                    title = 'Signal Covariance (cSb)'
+                elif V == 1:
+                    title = 'Transformed Signal Cov\n(inv(cNb)*cSb)'
+                elif V == 2:
+                    title = 'Noise Covariance (cNb)'
+                else:  # V == 3
+                    title = 'Trial-avg Data\nCovariance'
+                
+                matrix_max = np.percentile(np.abs(matrix_to_show), 99)
+                im1 = plt.imshow(matrix_to_show, aspect='auto', interpolation='none',
+                               clim=(-matrix_max, matrix_max), cmap='RdBu_r')
+                plt.colorbar(im1)
+                plt.title(title)
+                plt.xlabel('units')
+                plt.ylabel('units')
+            else:  # V == 4
+                plt.text(0.5, 0.5, 'Random Basis\n(No Matrix to Show)',
+                        ha='center', va='center', transform=ax1.transAxes)
+                plt.title('')
+
+        # Plot 2: Full basis matrix (top middle-left)
+        ax2 = fig.add_subplot(gs[0, 1])
         basis_max = np.percentile(np.abs(results['fullbasis']), 99)
-        im1 = plt.imshow(results['fullbasis'], aspect='auto', interpolation='none', 
+        im2 = plt.imshow(results['fullbasis'], aspect='auto', interpolation='none', 
                         clim=(-basis_max, basis_max), cmap='RdBu_r')
-        plt.colorbar(im1)
+        plt.colorbar(im2)
         plt.title('Full Basis Matrix')
         plt.xlabel('Dimension')
-        plt.ylabel('Voxels')
+        plt.ylabel('units')
 
-        # Plot 2: Eigenspectrum (top middle-left)
-        ax2 = fig.add_subplot(gs[0, 1])
+        # Plot 3: Eigenspectrum (top middle)
+        ax3 = fig.add_subplot(gs[0, 2])
         plt.plot(S, linewidth=1, color='blue', label='Eigenvalues')  # Made line thinner
         
         # Calculate and plot threshold indicators based on mode
         cv_mode = results.get('opt', {}).get('cv_mode', 0)
         cv_threshold_per = results.get('opt', {}).get('cv_threshold_per', 'unit')
-        mag_mode = results.get('opt', {}).get('mag_mode', 0)
+        mag_selection_mode = results.get('opt', {}).get('mag_selection_mode', 0)
+        mag_type = results.get('opt', {}).get('mag_type', 0)
         
         if cv_mode >= 0:  # Cross-validation mode
             if cv_threshold_per == 'population':
@@ -1011,17 +1063,17 @@ def plot_diagnostic_figures(data, results, test_data=None):
                         plt.plot(thresh, ylim[1], 'r*', markersize=5,
                                label="")
         else:  # Magnitude thresholding mode
-            if mag_mode == 0:  # Contiguous
+            if mag_selection_mode == 0:  # Contiguous
                 if isinstance(best_threshold, (np.ndarray, list)):
                     threshold_len = len(best_threshold)
                 else:
                     threshold_len = best_threshold
                 plt.axvline(x=threshold_len, color='r', linestyle='--', linewidth=1,
                           label=f'Mag threshold: {threshold_len} dims')
-            # Add circles for included dimensions (both contiguous and non-contiguous)
-            if isinstance(best_threshold, (np.ndarray, list)):
+            # Add circles for included dimensions only if mag_type=1
+            if isinstance(best_threshold, (np.ndarray, list)) and mag_type == 1:
                 plt.plot(best_threshold, S[best_threshold], 'ro', markersize=4,
-                        label='Included dimensions' if mag_mode == 1 else "")
+                        label='Included dimensions' if mag_selection_mode == 1 else "")
         
         plt.xlabel('Dimension')
         plt.ylabel('Eigenvalue')
@@ -1029,8 +1081,8 @@ def plot_diagnostic_figures(data, results, test_data=None):
         plt.grid(True, alpha=0.3)
         plt.legend()
 
-        # Plot 3: Signal and noise variances with NCSNR (top middle-right)
-        ax3 = fig.add_subplot(gs[0, 2])
+        # Plot 4: Signal and noise variances with NCSNR (top right)
+        ax4 = fig.add_subplot(gs[0, 3])
         plt.plot(sigvars, linewidth=1, label='Sig. var')
         plt.plot(noisevars, linewidth=1, label='Noise var')
         
@@ -1050,34 +1102,39 @@ def plot_diagnostic_figures(data, results, test_data=None):
                 threshold_len = len(best_threshold)
                 plt.axvline(x=threshold_len, color='r', linestyle='--', linewidth=1,
                            label=f'Dims retained: {threshold_len}')
+                # Add circles for included dimensions if mag_type=0
+                if mag_type == 0:
+                    plt.plot(best_threshold, sigvars[best_threshold], 'ro', markersize=4,
+                            label='Included dimensions' if mag_selection_mode == 1 else "")
             else:
                 plt.axvline(x=best_threshold, color='r', linestyle='--', linewidth=1,
                            label=f'Dims retained: {best_threshold}')
         
         # Add NCSNR on secondary y-axis
-        ax3_twin = ax3.twinx()
-        ax3_twin.plot(ncsnrs, linewidth=1, color='magenta', label='NCSNR')
-        ax3_twin.set_ylabel('NCSNR', color='magenta')
-        ax3_twin.tick_params(axis='y', labelcolor='magenta')
+        ax4_twin = ax4.twinx()
+        ax4_twin.plot(ncsnrs, linewidth=1, color='magenta', label='NCSNR')
+        ax4_twin.set_ylabel('NCSNR', color='magenta')
+        ax4_twin.tick_params(axis='y', labelcolor='magenta')
         
         # Combine legends from both axes
-        lines1, labels1 = ax3.get_legend_handles_labels()
-        lines2, labels2 = ax3_twin.get_legend_handles_labels()
-        ax3.legend(lines1 + lines2, labels1 + labels2, loc='best')
+        lines1, labels1 = ax4.get_legend_handles_labels()
+        lines2, labels2 = ax4_twin.get_legend_handles_labels()
+        ax4.legend(lines1 + lines2, labels1 + labels2, loc='best')
 
-        plt.xlabel('Dimension')
-        ax3.set_ylabel('Variance')
+        ax4.set_xlabel('Dimension')
+        ax4.set_ylabel('Variance')
         plt.title('Signal and Noise Variance\nwith NCSNR')
-        plt.grid(True, alpha=0.3)
+        ax4.grid(True, alpha=0.3, which='both', axis='both')  # Enable grid for both axes
+        ax4_twin.grid(False)  # Disable grid for twin axis to avoid double grid lines
 
-        # Plot 4: Cross-validation results (top right)
+        # Plot 5: Cross-validation results (first subplot in middle row)
+        ax5 = fig.add_subplot(gs[1, 0])
         if 'cv_scores' in results and results.get('opt', {}).get('cv_mode', 0) > -1:
-            ax4 = fig.add_subplot(gs[0, 3])
             cv_data = stats.zscore(results['cv_scores'].mean(1),axis=0,ddof=1)
             vmin, vmax = np.percentile(cv_data, [1, 99])
             plt.imshow(cv_data, aspect='auto', interpolation='none', clim=(vmin, vmax))
             plt.colorbar()
-            plt.xlabel('voxels')
+            plt.xlabel('units')
             plt.ylabel('PC exclusion threshold')
             plt.title('Cross-validation scores (z)')
             
@@ -1090,166 +1147,172 @@ def plot_diagnostic_figures(data, results, test_data=None):
                 if isinstance(best_threshold, np.ndarray):
                     plt.plot(np.arange(nunits), best_threshold-1, 'r.', markersize=4,
                             label='Unit-specific thresholds')
+            else:
+                plt.text(0.5, 0.5, 'No Cross-validation\nScores Available',
+                        ha='center', va='center', transform=ax5.transAxes)
+                plt.title('Cross-validation scores')
+
+        # Plot 6-8: Raw data, denoised data, noise (rest of middle row)
+        all_data = np.concatenate([raw_data.flatten(), denoised_data.flatten(), noise.flatten()])
+        max_abs_val = np.percentile(np.abs(all_data), 99)
+        data_clim = (-max_abs_val, max_abs_val)
+        
+        # Raw data
+        ax6 = fig.add_subplot(gs[1, 1])
+        im6 = plt.imshow(raw_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        plt.colorbar(im6)
+        plt.title('Initial Data')
+        plt.xlabel('units')
+        plt.ylabel('conditions')
+
+        # Denoised data
+        ax7 = fig.add_subplot(gs[1, 2])
+        im7 = plt.imshow(denoised_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        plt.colorbar(im7)
+        plt.title('Denoised Data')
+        plt.xlabel('units')
+        plt.ylabel('conditions')
+
+        # Noise
+        ax8 = fig.add_subplot(gs[1, 3])
+        im8 = plt.imshow(noise.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        plt.colorbar(im8)
+        plt.title('Noise')
+        plt.xlabel('units')
+        plt.ylabel('conditions')
+
+        # Plot denoising matrix (first subplot in bottom row)
+        ax9 = fig.add_subplot(gs[2, 0])
+        denoiser_max = np.percentile(np.abs(results['denoiser']), 99)
+        denoiser_clim = (-denoiser_max, denoiser_max)
+        im9 = plt.imshow(results['denoiser'], aspect='auto', interpolation='none', clim=denoiser_clim, cmap='RdBu_r')
+        plt.colorbar(im9)
+        plt.title('Optimal Denoising Matrix')
+        plt.xlabel('units')
+        plt.ylabel('units')
+
+        # Compute R2 and correlations for bottom row
+        if test_data is None:
+            # Use leave-one-out cross-validation on training data
+            raw_r2_per_unit = np.zeros((ntrials, nunits))
+            denoised_r2_per_unit = np.zeros((ntrials, nunits))
+            raw_corr_per_unit = np.zeros((ntrials, nunits))
+            denoised_corr_per_unit = np.zeros((ntrials, nunits))
+
+            for tr in range(ntrials):
+                train_trials = np.setdiff1d(np.arange(ntrials), tr)
+                train_avg = np.mean(data[:, :, train_trials], axis=2)
+                test_trial = data[:, :, tr]
+                
+                for v in range(nunits):
+                    raw_r2_per_unit[tr, v] = compute_r2(test_trial[v], train_avg[v])
+                    raw_corr_per_unit[tr, v] = np.corrcoef(test_trial[v], train_avg[v])[0, 1]
+                
+                train_avg_denoised = (train_avg.T @ results['denoiser']).T
+                test_trial_denoised = (test_trial.T @ results['denoiser']).T
                     
-
-    # Plot 5-8: Raw data, denoised data, noise, and denoising matrix (middle row)
-    all_data = np.concatenate([raw_data.flatten(), denoised_data.flatten(), noise.flatten()])
-    max_abs_val = np.percentile(np.abs(all_data), 99)
-    data_clim = (-max_abs_val, max_abs_val)
-    
-    denoiser_max = np.percentile(np.abs(results['denoiser']), 99)
-    denoiser_clim = (-denoiser_max, denoiser_max)
-    
-    # Raw data
-    ax5 = fig.add_subplot(gs[1, 0])
-    im5 = plt.imshow(raw_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
-    plt.colorbar(im5)
-    plt.title('Initial Data')
-    plt.xlabel('voxels')
-    plt.ylabel('conditions')
-
-    # Denoised data
-    ax6 = fig.add_subplot(gs[1, 1])
-    im6 = plt.imshow(denoised_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
-    plt.colorbar(im6)
-    plt.title('Denoised Data')
-    plt.xlabel('voxels')
-    plt.ylabel('conditions')
-
-    # Noise
-    ax7 = fig.add_subplot(gs[1, 2])
-    im7 = plt.imshow(noise.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
-    plt.colorbar(im7)
-    plt.title('Noise')
-    plt.xlabel('voxels')
-    plt.ylabel('conditions')
-
-    # Denoising matrix
-    ax8 = fig.add_subplot(gs[1, 3])
-    im8 = plt.imshow(results['denoiser'], aspect='auto', interpolation='none', clim=denoiser_clim, cmap='RdBu_r')
-    plt.colorbar(im8)
-    plt.title('Optimal Denoising Matrix')
-    plt.xlabel('voxels')
-    plt.ylabel('voxels')
-
-    # Create a special GridSpec just for the bottom row
-    gs_bottom = GridSpecFromSubplotSpec(1, 3, subplot_spec=gs[2, :], wspace=0.3)
-
-    # Compute R2 and correlations for bottom row
-    if test_data is None:
-        # Use leave-one-out cross-validation on training data
-        raw_r2_per_voxel = np.zeros((ntrials, nunits))
-        denoised_r2_per_voxel = np.zeros((ntrials, nunits))
-        denoised_both_r2_per_voxel = np.zeros((ntrials, nunits))
-        raw_corr_per_voxel = np.zeros((ntrials, nunits))
-        denoised_corr_per_voxel = np.zeros((ntrials, nunits))
-        denoised_both_corr_per_voxel = np.zeros((ntrials, nunits))
-
-        for tr in range(ntrials):
-            train_trials = np.setdiff1d(np.arange(ntrials), tr)
-            train_avg = np.mean(data[:, :, train_trials], axis=2)
-            test_trial = data[:, :, tr]
+                for v in range(nunits):
+                    denoised_r2_per_unit[tr, v] = compute_r2(test_trial[v], train_avg_denoised[v])
+                    denoised_corr_per_unit[tr, v] = np.corrcoef(test_trial[v], train_avg_denoised[v])[0, 1]
+        else:
+            # Use provided test data
+            if np.ndim(test_data) > 2:
+                test_avg = np.mean(test_data, axis=2)
+            else:
+                test_avg = test_data
+            train_avg = np.mean(data, axis=2)
+            
+            raw_r2_per_unit = np.zeros((1, nunits))
+            denoised_r2_per_unit = np.zeros((1, nunits))
+            raw_corr_per_unit = np.zeros((1, nunits))
+            denoised_corr_per_unit = np.zeros((1, nunits))
             
             for v in range(nunits):
-                raw_r2_per_voxel[tr, v] = compute_r2(test_trial[v], train_avg[v])
-                raw_corr_per_voxel[tr, v] = np.corrcoef(test_trial[v], train_avg[v])[0, 1]
+                raw_r2_per_unit[0, v] = compute_r2(test_avg[v], train_avg[v])
+                raw_corr_per_unit[0, v] = np.corrcoef(test_avg[v], train_avg[v])[0, 1]
             
             train_avg_denoised = (train_avg.T @ results['denoiser']).T
-            test_trial_denoised = (test_trial.T @ results['denoiser']).T
+            test_avg_denoised = (test_avg.T @ results['denoiser']).T
                 
             for v in range(nunits):
-                denoised_r2_per_voxel[tr, v] = compute_r2(test_trial[v], train_avg_denoised[v])
-                denoised_corr_per_voxel[tr, v] = np.corrcoef(test_trial[v], train_avg_denoised[v])[0, 1]
-                denoised_both_r2_per_voxel[tr, v] = compute_r2(test_trial_denoised[v], train_avg_denoised[v])
-                denoised_both_corr_per_voxel[tr, v] = np.corrcoef(test_trial_denoised[v], train_avg_denoised[v])[0, 1]
-    else:
-        # Use provided test data
-        if np.ndim(test_data) > 2:
-            test_avg = np.mean(test_data, axis=2)
-        else:
-            test_avg = test_data
-        train_avg = np.mean(data, axis=2)
-        
-        raw_r2_per_voxel = np.zeros((1, nunits))
-        denoised_r2_per_voxel = np.zeros((1, nunits))
-        denoised_both_r2_per_voxel = np.zeros((1, nunits))
-        raw_corr_per_voxel = np.zeros((1, nunits))
-        denoised_corr_per_voxel = np.zeros((1, nunits))
-        denoised_both_corr_per_voxel = np.zeros((1, nunits))
-        
-        for v in range(nunits):
-            raw_r2_per_voxel[0, v] = compute_r2(test_avg[v], train_avg[v])
-            raw_corr_per_voxel[0, v] = np.corrcoef(test_avg[v], train_avg[v])[0, 1]
-        
-        train_avg_denoised = (train_avg.T @ results['denoiser']).T
-        test_avg_denoised = (test_avg.T @ results['denoiser']).T
+                denoised_r2_per_unit[0, v] = compute_r2(test_avg[v], train_avg_denoised[v])
+                denoised_corr_per_unit[0, v] = np.corrcoef(test_avg[v], train_avg_denoised[v])[0, 1]
+
+        # Compute mean and SEM
+        raw_r2_mean = np.mean(raw_r2_per_unit, axis=0)
+        raw_r2_sem = stats.sem(raw_r2_per_unit, axis=0)
+        denoised_r2_mean = np.mean(denoised_r2_per_unit, axis=0)
+        denoised_r2_sem = stats.sem(denoised_r2_per_unit, axis=0)
+
+        raw_corr_mean = np.mean(raw_corr_per_unit, axis=0)
+        raw_corr_sem = stats.sem(raw_corr_per_unit, axis=0)
+        denoised_corr_mean = np.mean(denoised_corr_per_unit, axis=0)
+        denoised_corr_sem = stats.sem(denoised_corr_per_unit, axis=0)
+
+        # Function to plot bottom row with rotated histograms
+        def plot_bottom_histogram(ax, r2_mean, corr_mean, r2_color, corr_color, title):
+            plt.sca(ax)
+            plt.axhline(y=0, color='k', linewidth=2, zorder=1)
             
+            # Calculate histogram bins
+            bins = np.linspace(-1, 1, 50)
+            bin_width = bins[1] - bins[0]
+            
+            # Plot R2 histogram
+            r2_hist, _ = np.histogram(r2_mean, bins=bins)  # Remove density=True
+            plt.barh(bins[:-1] + bin_width/2, r2_hist, height=bin_width, 
+                    color=r2_color, alpha=0.6, label=f'Mean R² = {np.mean(r2_mean):.3f}')
+            
+            # Plot correlation histogram
+            corr_hist, _ = np.histogram(corr_mean, bins=bins)  # Remove density=True
+            plt.barh(bins[:-1] + bin_width/2, corr_hist, height=bin_width, 
+                    color=corr_color, alpha=0.6, label=f'Mean r = {np.mean(corr_mean):.3f}')
+            
+            plt.xlabel('# Units')  # Updated label
+            plt.ylabel('R² / Pearson r')
+            plt.title(title)
+            plt.grid(True, alpha=0.3)
+            plt.legend()
+            plt.ylim(-1, 1)
+
+        # Plot bottom row histograms and R² progression
+        train_trials = ntrials-1 if test_data is None else data.shape[2]
+        test_trials = 1 if test_data is None else (test_data.shape[2] if len(test_data.shape) > 2 else 1)
+            
+        plot_bottom_histogram(fig.add_subplot(gs[2, 1]), 
+                            raw_r2_mean, raw_corr_mean,
+                            'blue', 'lightblue',
+                            f'Baseline Generalization to Heldout Trial\nTrial-avg Train ({train_trials} trials) vs Test ({test_trials} trials)')
+
+        plot_bottom_histogram(fig.add_subplot(gs[2, 2]),
+                            denoised_r2_mean, denoised_corr_mean,
+                            'green', 'lightgreen',
+                            f'Denoised Generalization to Heldout Trial\nTrial-avg Train + denoised ({train_trials} trials) vs Test ({test_trials} trials)')
+
+        # Add R² progression plot
+        ax_prog = fig.add_subplot(gs[2, 3])
+        x_positions = [1, 2]  # Two positions for the two conditions
+        
+        # Plot lines for each unit
         for v in range(nunits):
-            denoised_r2_per_voxel[0, v] = compute_r2(test_avg[v], train_avg_denoised[v])
-            denoised_corr_per_voxel[0, v] = np.corrcoef(test_avg[v], train_avg_denoised[v])[0, 1]
-            denoised_both_r2_per_voxel[0, v] = compute_r2(test_avg_denoised[v], train_avg_denoised[v])
-            denoised_both_corr_per_voxel[0, v] = np.corrcoef(test_avg_denoised[v], train_avg_denoised[v])[0, 1]
-
-    # Compute mean and SEM
-    raw_r2_mean = np.mean(raw_r2_per_voxel, axis=0)
-    raw_r2_sem = stats.sem(raw_r2_per_voxel, axis=0)
-    denoised_r2_mean = np.mean(denoised_r2_per_voxel, axis=0)
-    denoised_r2_sem = stats.sem(denoised_r2_per_voxel, axis=0)
-    denoised_both_r2_mean = np.mean(denoised_both_r2_per_voxel, axis=0)
-    denoised_both_r2_sem = stats.sem(denoised_both_r2_per_voxel, axis=0)
-
-    raw_corr_mean = np.mean(raw_corr_per_voxel, axis=0)
-    raw_corr_sem = stats.sem(raw_corr_per_voxel, axis=0)
-    denoised_corr_mean = np.mean(denoised_corr_per_voxel, axis=0)
-    denoised_corr_sem = stats.sem(denoised_corr_per_voxel, axis=0)
-    denoised_both_corr_mean = np.mean(denoised_both_corr_per_voxel, axis=0)
-    denoised_both_corr_sem = stats.sem(denoised_both_corr_per_voxel, axis=0)
-
-    # Function to plot bottom row with rotated histograms
-    def plot_bottom_histogram(ax, r2_mean, corr_mean, r2_color, corr_color, title):
-        plt.sca(ax)
-        plt.axhline(y=0, color='k', linewidth=2, zorder=1)
+            values = [raw_r2_mean[v], denoised_r2_mean[v]]
+            plt.plot(x_positions, values, color='gray', alpha=0.2, linewidth=0.5)
+            plt.scatter(x_positions[0], values[0], alpha=0.5, s=20, color='blue')
+            plt.scatter(x_positions[1], values[1], alpha=0.5, s=20, color='green')
         
-        # Calculate histogram bins
-        bins = np.linspace(-1, 1, 50)
-        bin_width = bins[1] - bins[0]
+        # Plot mean performance
+        mean_values = [np.mean(raw_r2_mean), np.mean(denoised_r2_mean)]
+        plt.plot(x_positions, mean_values, color='pink', linewidth=2, label='Mean')
+        plt.scatter(x_positions[0], mean_values[0], color='blue', s=100, edgecolor='pink', linewidth=2)
+        plt.scatter(x_positions[1], mean_values[1], color='green', s=100, edgecolor='pink', linewidth=2)
         
-        # Plot R2 histogram
-        r2_hist, _ = np.histogram(r2_mean, bins=bins)  # Remove density=True
-        plt.barh(bins[:-1] + bin_width/2, r2_hist, height=bin_width, 
-                color=r2_color, alpha=0.6, label=f'Mean R² = {np.mean(r2_mean):.3f}')
-        
-        # Plot correlation histogram
-        corr_hist, _ = np.histogram(corr_mean, bins=bins)  # Remove density=True
-        plt.barh(bins[:-1] + bin_width/2, corr_hist, height=bin_width, 
-                color=corr_color, alpha=0.6, label=f'Mean r = {np.mean(corr_mean):.3f}')
-        
-        plt.xlabel('# Units')  # Updated label
-        plt.ylabel('R² / Pearson r')
-        plt.title(title)
+        plt.xticks(x_positions, ['Raw', 'Train\nDenoised'])
+        plt.ylabel('R²')
+        plt.title(f'Impact of denoising on R² ({nunits} units)')
         plt.grid(True, alpha=0.3)
         plt.legend()
+        plt.xlim(0.5, 2.5)
         plt.ylim(-1, 1)
-
-    # Plot bottom row with histograms
-    train_trials = ntrials-1 if test_data is None else data.shape[2]
-    test_trials = 1 if test_data is None else (test_data.shape[2] if len(test_data.shape) > 2 else 1)
-        
-    plot_bottom_histogram(fig.add_subplot(gs_bottom[0]), 
-                         raw_r2_mean, raw_corr_mean,
-                         'blue', 'lightblue',
-                         f'Raw Data\nTrain ({train_trials} trials) vs Test ({test_trials} trials)')
-
-    plot_bottom_histogram(fig.add_subplot(gs_bottom[1]),
-                         denoised_r2_mean, denoised_corr_mean,
-                         'green', 'lightgreen',
-                         f'Denoised Training Data Only\nTrain ({train_trials} trials) vs Test ({test_trials} trials)')
-
-    plot_bottom_histogram(fig.add_subplot(gs_bottom[2]),
-                         denoised_both_r2_mean, denoised_both_corr_mean,
-                         'purple', 'plum',
-                         f'Both Train and Test Denoised\nTrain ({train_trials} trials) vs Test ({test_trials} trials)')
-
-    plt.show()
+        plt.axhline(y=0, color='k', linewidth=2, zorder=1)
 
     
