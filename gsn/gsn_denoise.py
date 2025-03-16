@@ -958,11 +958,12 @@ def plot_diagnostic_figures(data, results, test_data=None):
 
     # Get raw and denoised data
     if results.get('opt', {}).get('denoisingtype', 0) == 0:
-        raw_data = np.mean(data, axis=2)
+        raw_data = np.mean(data, axis=2)  # Average across trials for trial-averaged denoising
         denoised_data = results['denoiseddata']
     else:
-        raw_data = data
-        denoised_data = results['denoiseddata']
+        # For single-trial denoising, we'll plot the first trial
+        raw_data = data[:, :, 0] if data.ndim == 3 else data
+        denoised_data = results['denoiseddata'][:, :, 0] if results['denoiseddata'].ndim == 3 else results['denoiseddata']
 
     # Compute noise as difference
     noise = raw_data - denoised_data
@@ -997,44 +998,62 @@ def plot_diagnostic_figures(data, results, test_data=None):
         ax1 = fig.add_subplot(gs[0, 0])
         V = results.get('V')
         
-        if isinstance(V, int):
+        if isinstance(V, (int, np.integer)):
             if V in [0, 1, 2, 3]:
                 # Show the basis source matrix
-                matrix_to_show = results['basis_source']
-                if V == 0:
-                    title = 'Signal Covariance (cSb)'
-                elif V == 1:
-                    title = 'Transformed Signal Cov\n(inv(cNb)*cSb)'
-                elif V == 2:
-                    title = 'Noise Covariance (cNb)'
-                else:  # V == 3
-                    title = 'Trial-avg Data\nCovariance'
-                
-                matrix_max = np.percentile(np.abs(matrix_to_show), 99)
-                im1 = plt.imshow(matrix_to_show, aspect='auto', interpolation='none',
-                               clim=(-matrix_max, matrix_max), cmap='RdBu_r')
-                plt.colorbar(im1)
-                plt.title(title)
-                plt.xlabel('units')
-                plt.ylabel('units')
+                if 'basis_source' in results and results['basis_source'] is not None:
+                    matrix_to_show = results['basis_source']
+                    print("In plotting: matrix_to_show shape =", matrix_to_show.shape)  # Debug print
+                    if V == 0:
+                        title = 'Signal Covariance (cSb)'
+                    elif V == 1:
+                        title = 'Transformed Signal Cov\n(inv(cNb)*cSb)'
+                    elif V == 2:
+                        title = 'Noise Covariance (cNb)'
+                    else:  # V == 3
+                        title = 'Trial-avg Data\nCovariance'
+                    
+                    matrix_max = np.percentile(np.abs(matrix_to_show), 95)  # Use 95th percentile like example2
+                    print(f"Matrix stats: shape={matrix_to_show.shape}, min={np.min(matrix_to_show):.3f}, max={np.max(matrix_to_show):.3f}, mean={np.mean(matrix_to_show):.3f}, has_nan={np.any(np.isnan(matrix_to_show))}, has_inf={np.any(np.isinf(matrix_to_show))}, max_95={matrix_max:.3f}")
+                    
+                    im1 = ax1.imshow(matrix_to_show, vmin=-matrix_max, vmax=matrix_max,
+                                   aspect='equal', interpolation='nearest', cmap='RdBu_r')
+                    plt.colorbar(im1, ax=ax1, label='Covariance')
+                    ax1.set_title(title, pad=10)
+                    ax1.set_xlabel('Voxel')
+                    ax1.set_ylabel('Voxel')
+                else:
+                    ax1.text(0.5, 0.5, f'Covariance Matrix\nNot Available for V={V}',
+                            ha='center', va='center', transform=ax1.transAxes)
+                    ax1.set_title('')
             else:  # V == 4
-                plt.text(0.5, 0.5, 'Random Basis\n(No Matrix to Show)',
+                ax1.text(0.5, 0.5, 'Random Basis\n(No Matrix to Show)',
                         ha='center', va='center', transform=ax1.transAxes)
-                plt.title('')
+                ax1.set_title('')
+        elif isinstance(V, np.ndarray):
+            # Handle case where V is a matrix
+            ax1.text(0.5, 0.5, f'User-Supplied Basis\nShape: {V.shape}',
+                    ha='center', va='center', transform=ax1.transAxes)
+            ax1.set_title('User-Supplied Basis')
+        else:
+            # Handle any other case
+            ax1.text(0.5, 0.5, 'No Basis Information Available',
+                    ha='center', va='center', transform=ax1.transAxes)
+            ax1.set_title('')
 
         # Plot 2: Full basis matrix (top middle-left)
         ax2 = fig.add_subplot(gs[0, 1])
         basis_max = np.percentile(np.abs(results['fullbasis']), 99)
-        im2 = plt.imshow(results['fullbasis'], aspect='auto', interpolation='none', 
+        im2 = ax2.imshow(results['fullbasis'], aspect='auto', interpolation='none', 
                         clim=(-basis_max, basis_max), cmap='RdBu_r')
-        plt.colorbar(im2)
-        plt.title('Full Basis Matrix')
-        plt.xlabel('Dimension')
-        plt.ylabel('units')
+        plt.colorbar(im2, ax=ax2)
+        ax2.set_title('Full Basis Matrix')
+        ax2.set_xlabel('Dimension')
+        ax2.set_ylabel('units')
 
         # Plot 3: Eigenspectrum (top middle)
         ax3 = fig.add_subplot(gs[0, 2])
-        plt.plot(S, linewidth=1, color='blue', label='Eigenvalues')  # Made line thinner
+        ax3.plot(S, linewidth=1, color='blue', label='Eigenvalues')  # Made line thinner
         
         # Calculate and plot threshold indicators based on mode
         cv_mode = results.get('opt', {}).get('cv_mode', 0)
@@ -1047,20 +1066,19 @@ def plot_diagnostic_figures(data, results, test_data=None):
                 # Single line for population threshold
                 if isinstance(best_threshold, (np.ndarray, list)):
                     best_threshold = int(best_threshold[0])  # Take first value if array
-                plt.axvline(x=best_threshold, color='r', linestyle='--', linewidth=1,
+                ax3.axvline(x=float(best_threshold), color='r', linestyle='--', linewidth=1,
                           label=f'Population threshold: {best_threshold} dims')
             else:  # Unit mode
                 # Mean line and asterisks for unit-specific thresholds
                 if isinstance(best_threshold, (np.ndarray, list)):
                     mean_threshold = np.mean(best_threshold)
-                    plt.axvline(x=mean_threshold, color='r', linestyle='--', linewidth=1,
+                    ax3.axvline(x=float(mean_threshold), color='r', linestyle='--', linewidth=1,
                               label=f'Mean threshold: {mean_threshold:.1f} dims')
                     # Add asterisks at the top for each unit's threshold
                     unique_thresholds = np.unique(best_threshold)
-                    ylim = plt.ylim()
+                    ylim = ax3.get_ylim()
                     for thresh in unique_thresholds:
-                        count = np.sum(best_threshold == thresh)
-                        plt.plot(thresh, ylim[1], 'r*', markersize=5,
+                        ax3.plot(thresh, ylim[1], 'r*', markersize=5,
                                label="")
         else:  # Magnitude thresholding mode
             if mag_selection_mode == 0:  # Contiguous
@@ -1068,23 +1086,24 @@ def plot_diagnostic_figures(data, results, test_data=None):
                     threshold_len = len(best_threshold)
                 else:
                     threshold_len = best_threshold
-                plt.axvline(x=threshold_len, color='r', linestyle='--', linewidth=1,
+                ax3.axvline(x=float(threshold_len), color='r', linestyle='--', linewidth=1,
                           label=f'Mag threshold: {threshold_len} dims')
             # Add circles for included dimensions only if mag_type=1
-            if isinstance(best_threshold, (np.ndarray, list)) and mag_type == 1:
-                plt.plot(best_threshold, S[best_threshold], 'ro', markersize=4,
+            if isinstance(best_threshold, (np.ndarray, list)) and mag_type == 1 and len(best_threshold) > 0:
+                best_threshold_array = np.asarray(best_threshold, dtype=int)
+                ax3.plot(best_threshold_array, S[best_threshold_array], 'ro', markersize=4,
                         label='Included dimensions' if mag_selection_mode == 1 else "")
         
-        plt.xlabel('Dimension')
-        plt.ylabel('Eigenvalue')
-        plt.title('Denoising Basis\nEigenspectrum')
-        plt.grid(True, alpha=0.3)
-        plt.legend()
+        ax3.set_xlabel('Dimension')
+        ax3.set_ylabel('Eigenvalue')
+        ax3.set_title('Denoising Basis\nEigenspectrum')
+        ax3.grid(True, alpha=0.3)
+        ax3.legend()
 
         # Plot 4: Signal and noise variances with NCSNR (top right)
         ax4 = fig.add_subplot(gs[0, 3])
-        plt.plot(sigvars, linewidth=1, label='Sig. var')
-        plt.plot(noisevars, linewidth=1, label='Noise var')
+        ax4.plot(sigvars, linewidth=1, label='Sig. var')
+        ax4.plot(noisevars, linewidth=1, label='Noise var')
         
         # Handle thresholds based on mode
         cv_mode = results.get('opt', {}).get('cv_mode', 0)
@@ -1092,22 +1111,25 @@ def plot_diagnostic_figures(data, results, test_data=None):
             if isinstance(best_threshold, (np.ndarray, list)):
                 if len(best_threshold) > 0:
                     threshold_val = np.mean(best_threshold)
-                    plt.axvline(x=threshold_val, color='r', linestyle='--', linewidth=1,
+                    ax4.axvline(x=float(threshold_val), color='r', linestyle='--', linewidth=1,
                               label=f'Mean thresh: {threshold_val:.1f} dims')
             else:
-                plt.axvline(x=best_threshold, color='r', linestyle='--', linewidth=1,
+                # Ensure scalar value for axvline
+                ax4.axvline(x=float(best_threshold), color='r', linestyle='--', linewidth=1,
                            label=f'Thresh: {best_threshold} dims')
         else:  # Magnitude thresholding mode
             if isinstance(best_threshold, (np.ndarray, list)):
                 threshold_len = len(best_threshold)
-                plt.axvline(x=threshold_len, color='r', linestyle='--', linewidth=1,
+                ax4.axvline(x=float(threshold_len), color='r', linestyle='--', linewidth=1,
                            label=f'Dims retained: {threshold_len}')
                 # Add circles for included dimensions if mag_type=0
-                if mag_type == 0:
-                    plt.plot(best_threshold, sigvars[best_threshold], 'ro', markersize=4,
+                if mag_type == 0 and len(best_threshold) > 0:
+                    best_threshold_array = np.asarray(best_threshold, dtype=int)
+                    ax4.plot(best_threshold_array, sigvars[best_threshold_array], 'ro', markersize=4,
                             label='Included dimensions' if mag_selection_mode == 1 else "")
             else:
-                plt.axvline(x=best_threshold, color='r', linestyle='--', linewidth=1,
+                # Ensure scalar value for axvline
+                ax4.axvline(x=float(best_threshold), color='r', linestyle='--', linewidth=1,
                            label=f'Dims retained: {best_threshold}')
         
         # Add NCSNR on secondary y-axis
@@ -1123,7 +1145,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
 
         ax4.set_xlabel('Dimension')
         ax4.set_ylabel('Variance')
-        plt.title('Signal and Noise Variance\nwith NCSNR')
+        ax4.set_title('Signal and Noise Variance for \nData Projected into Basis')
         ax4.grid(True, alpha=0.3, which='both', axis='both')  # Enable grid for both axes
         ax4_twin.grid(False)  # Disable grid for twin axis to avoid double grid lines
 
@@ -1132,14 +1154,20 @@ def plot_diagnostic_figures(data, results, test_data=None):
         if 'cv_scores' in results and results.get('opt', {}).get('cv_mode', 0) > -1:
             cv_data = stats.zscore(results['cv_scores'].mean(1),axis=0,ddof=1)
             vmin, vmax = np.percentile(cv_data, [1, 99])
-            plt.imshow(cv_data, aspect='auto', interpolation='none', clim=(vmin, vmax))
+            plt.imshow(cv_data.T, aspect='auto', interpolation='none', clim=(vmin, vmax))
             plt.colorbar()
             plt.xlabel('units')
             plt.ylabel('PC exclusion threshold')
             plt.title('Cross-validation scores (z)')
             
             # Show fewer ticks by increasing step size
-            thresholds = opt.get('cv_thresholds', np.arange(results['cv_scores'].shape[0]))
+            # Get thresholds, handling both list and array types
+            cv_thresholds = opt.get('cv_thresholds', np.arange(results['cv_scores'].shape[0]))
+            if isinstance(cv_thresholds, list):
+                thresholds = np.array(cv_thresholds) - 1
+            else:
+                thresholds = cv_thresholds - 1
+            
             step = max(len(thresholds) // 10, 1)  # Show ~10 ticks or less
             plt.yticks(np.arange(len(thresholds))[::step], thresholds[::step])
             
