@@ -799,6 +799,50 @@ def negative_mse_columns(x, y):
         return np.zeros(x.shape[1])  # Return zeros for empty arrays
     return -np.mean((x - y) ** 2, axis=0)
 
+def pearson_correlation_columns(x, y):
+    """
+    Calculate Pearson correlation between corresponding columns of two matrices.
+
+    Parameters:
+    -----------
+    x : ndarray
+        First matrix of shape (nrows, ncols)
+    y : ndarray 
+        Second matrix of shape (nrows, ncols)
+        Must have same shape as x
+
+    Returns:
+    --------
+    correlations : ndarray
+        Array of shape (ncols,) containing Pearson correlation coefficient
+        for each pair of corresponding columns.
+        Values range from -1 (perfect negative correlation) to 
+        1 (perfect positive correlation)
+
+    Example:
+    --------
+    x = np.array([[1, 4], [2, 5], [3, 6]])  # 3 rows, 2 cols
+    y = np.array([[2, 7], [3, 8], [4, 9]])  # Same shape
+    corrs = pearson_correlation_columns(x, y)  # Returns [1., 1.]
+    
+    Notes:
+    ------
+    Handles empty inputs by returning zeros. Uses numpy's corrcoef
+    function for efficient computation of correlations.
+    """
+    if x.shape[0] == 0 or y.shape[0] == 0:
+        return np.zeros(x.shape[1])
+        
+    correlations = np.zeros(x.shape[1])
+    for i in range(x.shape[1]):
+        # Calculate correlation coefficient matrix for this column pair
+        corr_matrix = np.corrcoef(x[:, i], y[:, i])
+        # Extract the correlation coefficient (off-diagonal element)
+        correlations[i] = corr_matrix[0, 1]
+        
+    return correlations
+
+
 def make_orthonormal(V):
     """MAKE_ORTHONORMAL Find the nearest matrix with orthonormal columns.
 
@@ -1005,13 +1049,13 @@ def plot_diagnostic_figures(data, results, test_data=None):
                     matrix_to_show = results['basis_source']
                     print("In plotting: matrix_to_show shape =", matrix_to_show.shape)  # Debug print
                     if V == 0:
-                        title = 'Signal Covariance (cSb)'
+                        title = 'GSN Signal Covariance (cSb)'
                     elif V == 1:
-                        title = 'Transformed Signal Cov\n(inv(cNb)*cSb)'
+                        title = 'GSN Transformed Signal Cov\n(inv(cNb)*cSb)'
                     elif V == 2:
-                        title = 'Noise Covariance (cNb)'
+                        title = 'GSN Noise Covariance (cNb)'
                     else:  # V == 3
-                        title = 'Trial-avg Data\nCovariance'
+                        title = 'Naive Trial-avg Data\nCovariance'
                     
                     matrix_max = np.percentile(np.abs(matrix_to_show), 95)  # Use 95th percentile like example2
                     print(f"Matrix stats: shape={matrix_to_show.shape}, min={np.min(matrix_to_show):.3f}, max={np.max(matrix_to_show):.3f}, mean={np.mean(matrix_to_show):.3f}, has_nan={np.any(np.isnan(matrix_to_show))}, has_inf={np.any(np.isinf(matrix_to_show))}, max_95={matrix_max:.3f}")
@@ -1020,8 +1064,8 @@ def plot_diagnostic_figures(data, results, test_data=None):
                                    aspect='equal', interpolation='nearest', cmap='RdBu_r')
                     plt.colorbar(im1, ax=ax1, label='Covariance')
                     ax1.set_title(title, pad=10)
-                    ax1.set_xlabel('Voxel')
-                    ax1.set_ylabel('Voxel')
+                    ax1.set_xlabel('Units')
+                    ax1.set_ylabel('Units')
                 else:
                     ax1.text(0.5, 0.5, f'Covariance Matrix\nNot Available for V={V}',
                             ha='center', va='center', transform=ax1.transAxes)
@@ -1049,8 +1093,8 @@ def plot_diagnostic_figures(data, results, test_data=None):
         plt.colorbar(im2, ax=ax2)
         ax2.set_title('Full Basis Matrix')
         ax2.set_xlabel('Dimension')
-        ax2.set_ylabel('units')
-
+        ax2.set_ylabel('Units')
+        
         # Plot 3: Eigenspectrum (top middle)
         ax3 = fig.add_subplot(gs[0, 2])
         ax3.plot(S, linewidth=1, color='blue', label='Eigenvalues')  # Made line thinner
@@ -1156,24 +1200,24 @@ def plot_diagnostic_figures(data, results, test_data=None):
             vmin, vmax = np.percentile(cv_data, [1, 99])
             plt.imshow(cv_data.T, aspect='auto', interpolation='none', clim=(vmin, vmax))
             plt.colorbar()
-            plt.xlabel('units')
-            plt.ylabel('PC exclusion threshold')
+            plt.xlabel('PC exclusion threshold')
+            plt.ylabel('Units')
             plt.title('Cross-validation scores (z)')
             
             # Show fewer ticks by increasing step size
             # Get thresholds, handling both list and array types
             cv_thresholds = opt.get('cv_thresholds', np.arange(results['cv_scores'].shape[0]))
             if isinstance(cv_thresholds, list):
-                thresholds = np.array(cv_thresholds) - 1
+                thresholds = np.array(cv_thresholds)
             else:
-                thresholds = cv_thresholds - 1
+                thresholds = cv_thresholds
             
             step = max(len(thresholds) // 10, 1)  # Show ~10 ticks or less
-            plt.yticks(np.arange(len(thresholds))[::step], thresholds[::step])
+            plt.xticks(np.arange(len(thresholds))[::step], thresholds[::step])
             
             if results.get('opt', {}).get('cv_threshold_per') == 'unit':
                 if isinstance(best_threshold, np.ndarray):
-                    plt.plot(np.arange(nunits), best_threshold-1, 'r.', markersize=4,
+                    plt.plot(best_threshold-1, np.arange(nunits), 'r.', markersize=4,
                             label='Unit-specific thresholds')
             else:
                 plt.text(0.5, 0.5, 'No Cross-validation\nScores Available',
@@ -1187,27 +1231,27 @@ def plot_diagnostic_figures(data, results, test_data=None):
         
         # Raw data
         ax6 = fig.add_subplot(gs[1, 1])
-        im6 = plt.imshow(raw_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        im6 = plt.imshow(raw_data, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
         plt.colorbar(im6)
-        plt.title('Initial Data')
-        plt.xlabel('units')
-        plt.ylabel('conditions')
+        plt.title('Input Data (trial-averaged)')
+        plt.xlabel('Conditions')
+        plt.ylabel('Units')
 
         # Denoised data
         ax7 = fig.add_subplot(gs[1, 2])
-        im7 = plt.imshow(denoised_data.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        im7 = plt.imshow(denoised_data, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
         plt.colorbar(im7)
-        plt.title('Denoised Data')
-        plt.xlabel('units')
-        plt.ylabel('conditions')
+        plt.title('Data projected into basis')
+        plt.xlabel('Conditions')
+        plt.ylabel('Units')
 
         # Noise
         ax8 = fig.add_subplot(gs[1, 3])
-        im8 = plt.imshow(noise.T, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
+        im8 = plt.imshow(noise, aspect='auto', interpolation='none', clim=data_clim, cmap='RdBu_r')
         plt.colorbar(im8)
-        plt.title('Noise')
-        plt.xlabel('units')
-        plt.ylabel('conditions')
+        plt.title('Residual')
+        plt.xlabel('Conditions')
+        plt.ylabel('Units')
 
         # Plot denoising matrix (first subplot in bottom row)
         ax9 = fig.add_subplot(gs[2, 0])
@@ -1215,7 +1259,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
         denoiser_clim = (-denoiser_max, denoiser_max)
         im9 = plt.imshow(results['denoiser'], aspect='auto', interpolation='none', clim=denoiser_clim, cmap='RdBu_r')
         plt.colorbar(im9)
-        plt.title('Optimal Denoising Matrix')
+        plt.title('Optimal Basis Matrix')
         plt.xlabel('units')
         plt.ylabel('units')
 
@@ -1280,7 +1324,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
         # Function to plot bottom row with rotated histograms
         def plot_bottom_histogram(ax, r2_mean, corr_mean, r2_color, corr_color, title):
             plt.sca(ax)
-            plt.axhline(y=0, color='k', linewidth=2, zorder=1)
+            plt.axvline(x=0, color='k', linewidth=2, zorder=1)
             
             # Calculate histogram bins
             bins = np.linspace(-1, 1, 50)
@@ -1288,20 +1332,20 @@ def plot_diagnostic_figures(data, results, test_data=None):
             
             # Plot R2 histogram
             r2_hist, _ = np.histogram(r2_mean, bins=bins)  # Remove density=True
-            plt.barh(bins[:-1] + bin_width/2, r2_hist, height=bin_width, 
+            plt.bar(bins[:-1] + bin_width/2, r2_hist, width=bin_width, 
                     color=r2_color, alpha=0.6, label=f'Mean R² = {np.mean(r2_mean):.3f}')
             
             # Plot correlation histogram
             corr_hist, _ = np.histogram(corr_mean, bins=bins)  # Remove density=True
-            plt.barh(bins[:-1] + bin_width/2, corr_hist, height=bin_width, 
+            plt.bar(bins[:-1] + bin_width/2, corr_hist, width=bin_width, 
                     color=corr_color, alpha=0.6, label=f'Mean r = {np.mean(corr_mean):.3f}')
             
-            plt.xlabel('# Units')  # Updated label
-            plt.ylabel('R² / Pearson r')
+            plt.ylabel('# Units')  # Updated label
+            plt.xlabel('R² / Pearson r')
             plt.title(title)
             plt.grid(True, alpha=0.3)
             plt.legend()
-            plt.ylim(-1, 1)
+            plt.xlim(-1, 1)
 
         # Plot bottom row histograms and R² progression
         train_trials = ntrials-1 if test_data is None else data.shape[2]
@@ -1310,12 +1354,12 @@ def plot_diagnostic_figures(data, results, test_data=None):
         plot_bottom_histogram(fig.add_subplot(gs[2, 1]), 
                             raw_r2_mean, raw_corr_mean,
                             'blue', 'lightblue',
-                            f'Baseline Generalization to Heldout Trial\nTrial-avg Train ({train_trials} trials) vs Test ({test_trials} trials)')
+                            f'Baseline Generalization\nTrial-avg Train ({train_trials} trials) vs\nTrial-avg Test ({test_trials} trials)')
 
         plot_bottom_histogram(fig.add_subplot(gs[2, 2]),
                             denoised_r2_mean, denoised_corr_mean,
                             'green', 'lightgreen',
-                            f'Denoised Generalization to Heldout Trial\nTrial-avg Train + denoised ({train_trials} trials) vs Test ({test_trials} trials)')
+                            f'Denoised Generalization\nTrial-avg Train + denoised ({train_trials} trials) vs\nTrial-avg Test ({test_trials} trials)')
 
         # Add R² progression plot
         ax_prog = fig.add_subplot(gs[2, 3])
@@ -1334,7 +1378,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
         plt.scatter(x_positions[0], mean_values[0], color='blue', s=100, edgecolor='pink', linewidth=2)
         plt.scatter(x_positions[1], mean_values[1], color='green', s=100, edgecolor='pink', linewidth=2)
         
-        plt.xticks(x_positions, ['Raw', 'Train\nDenoised'])
+        plt.xticks(x_positions, ['Trial Averaged', 'With Denoising'])
         plt.ylabel('R²')
         plt.title(f'Impact of denoising on R² ({nunits} units)')
         plt.grid(True, alpha=0.3)
