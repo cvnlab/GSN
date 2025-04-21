@@ -1,6 +1,5 @@
 import numpy as np
 from gsn.perform_gsn import perform_gsn
-from tqdm import tqdm
 from scipy import stats
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
@@ -525,7 +524,7 @@ def perform_cross_validation(data, basis, opt, results=None):
     # Initialize cv_scores
     cv_scores = np.zeros((len(thresholds), ntrials, nunits))
 
-    for tr in tqdm(range(ntrials)):
+    for tr in range(ntrials):
         # Define cross-validation splits based on cv_mode
         if cv_mode == 0:
             # Denoise average of n-1 trials, test against held out trial
