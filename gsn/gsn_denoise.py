@@ -799,50 +799,6 @@ def negative_mse_columns(x, y):
         return np.zeros(x.shape[1])  # Return zeros for empty arrays
     return -np.mean((x - y) ** 2, axis=0)
 
-def pearson_correlation_columns(x, y):
-    """
-    Calculate Pearson correlation between corresponding columns of two matrices.
-
-    Parameters:
-    -----------
-    x : ndarray
-        First matrix of shape (nrows, ncols)
-    y : ndarray 
-        Second matrix of shape (nrows, ncols)
-        Must have same shape as x
-
-    Returns:
-    --------
-    correlations : ndarray
-        Array of shape (ncols,) containing Pearson correlation coefficient
-        for each pair of corresponding columns.
-        Values range from -1 (perfect negative correlation) to 
-        1 (perfect positive correlation)
-
-    Example:
-    --------
-    x = np.array([[1, 4], [2, 5], [3, 6]])  # 3 rows, 2 cols
-    y = np.array([[2, 7], [3, 8], [4, 9]])  # Same shape
-    corrs = pearson_correlation_columns(x, y)  # Returns [1., 1.]
-    
-    Notes:
-    ------
-    Handles empty inputs by returning zeros. Uses numpy's corrcoef
-    function for efficient computation of correlations.
-    """
-    if x.shape[0] == 0 or y.shape[0] == 0:
-        return np.zeros(x.shape[1])
-        
-    correlations = np.zeros(x.shape[1])
-    for i in range(x.shape[1]):
-        # Calculate correlation coefficient matrix for this column pair
-        corr_matrix = np.corrcoef(x[:, i], y[:, i])
-        # Extract the correlation coefficient (off-diagonal element)
-        correlations[i] = corr_matrix[0, 1]
-        
-    return correlations
-
-
 def make_orthonormal(V):
     """MAKE_ORTHONORMAL Find the nearest matrix with orthonormal columns.
 
