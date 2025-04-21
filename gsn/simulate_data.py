@@ -15,7 +15,7 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
 def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0, 
                  noise_multiplier=1.0, align_alpha=0.0, align_k=0, random_seed=None, 
-                 want_fig=False, signal_cov=None, true_signal=None):
+                 want_fig=False, signal_cov=None, true_signal=None, cluster_units=False):
     """
     Generate synthetic neural data with controlled signal and noise properties.
     
@@ -36,6 +36,9 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
                                         If provided, overrides signal_cov and signal_decay.
                                         Note: When provided, signal_cov will be calculated
                                         as the sample covariance of this signal.
+        cluster_units (bool): Whether to reorder units based on hierarchical clustering
+                            of the signal covariance matrix. This is purely cosmetic
+                            for visualization and does not affect data properties.
     
     Returns:
         (train_data, test_data, ground_truth)
@@ -49,6 +52,7 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
              'U_noise'    -> Original eigenvectors for noise
              'signal_eigs'
              'noise_eigs'
+             'unit_order' -> Original indices of units after clustering (if cluster_units=True)
     """
     if random_seed is not None:
         rng = np.random.RandomState(random_seed)
@@ -140,6 +144,32 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
     train_data = train_data.transpose(1, 2, 0)
     test_data  = test_data.transpose(1, 2, 0)
 
+    # Optionally reorder units based on hierarchical clustering
+    unit_order = None
+    if cluster_units:
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import pdist
+        from scipy.stats import zscore
+        
+        # Cluster based on ground truth signal patterns
+        # true_signal shape is (ncond, nvox), so transpose to get (nvox, ncond)
+        # Standardize each unit's activity pattern for better clustering
+        signal_for_clustering = zscore(true_signal, axis=0).T  # zscore across conditions for each unit
+        
+        # Use correlation distance and average linkage for more balanced clusters
+        dist = pdist(signal_for_clustering, metric='correlation')
+        Z = linkage(dist, method='average')  # Average linkage often gives more balanced clusters
+        unit_order = leaves_list(Z)  # Get the reordered indices
+        
+        # Reorder all relevant matrices and arrays
+        train_data = train_data[unit_order]
+        test_data = test_data[unit_order]
+        true_signal = true_signal[:, unit_order]
+        signal_cov = signal_cov[unit_order][:, unit_order]
+        noise_cov = noise_cov[unit_order][:, unit_order]
+        U_signal = U_signal[unit_order]
+        U_noise = U_noise[unit_order]
+
     ground_truth = {
         'signal':      true_signal,
         'signal_cov':  signal_cov,
@@ -153,6 +183,9 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
             'true_signal': true_signal is not None
         }
     }
+    
+    if unit_order is not None:
+        ground_truth['unit_order'] = unit_order
 
     if want_fig:
         plot_data_diagnostic(train_data, ground_truth, {
@@ -165,7 +198,8 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
             'align_alpha': align_alpha,
             'align_k': align_k,
             'random_seed': random_seed,
-            'user_provided': ground_truth['user_provided']
+            'user_provided': ground_truth['user_provided'],
+            'clustered': cluster_units
         })
 
     return train_data, test_data, ground_truth
@@ -326,6 +360,10 @@ def plot_data_diagnostic(data, ground_truth, params):
         title_text += f"Noise multiplier={noise_multiplier:.2f}\n"
     
     title_text += f"Alignment: alpha={align_alpha:.2f} (0=orthogonal, 1=aligned), k={align_k} top PCs"
+    
+    # Add note about clustering if units were reordered
+    if params.get('clustered', False):
+        title_text += "\nUnits reordered by hierarchical clustering"
     
     fig.suptitle(title_text, fontsize=14)
     
