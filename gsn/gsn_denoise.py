@@ -1213,8 +1213,8 @@ def plot_diagnostic_figures(data, results, test_data=None):
         im9 = plt.imshow(results['denoiser'], aspect='auto', interpolation='none', clim=denoiser_clim, cmap='RdBu_r')
         plt.colorbar(im9)
         plt.title('Optimal Basis Matrix')
-        plt.xlabel('units')
-        plt.ylabel('units')
+        plt.xlabel('Units')
+        plt.ylabel('Units')
 
         # Compute R2 and correlations for bottom row
         if test_data is None:
