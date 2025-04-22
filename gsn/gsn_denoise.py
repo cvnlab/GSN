@@ -1002,7 +1002,6 @@ def plot_diagnostic_figures(data, results, test_data=None):
                 # Show the basis source matrix
                 if 'basis_source' in results and results['basis_source'] is not None:
                     matrix_to_show = results['basis_source']
-                    print("In plotting: matrix_to_show shape =", matrix_to_show.shape)  # Debug print
                     if V == 0:
                         title = 'GSN Signal Covariance (cSb)'
                     elif V == 1:
@@ -1013,7 +1012,6 @@ def plot_diagnostic_figures(data, results, test_data=None):
                         title = 'Naive Trial-avg Data\nCovariance'
                     
                     matrix_max = np.percentile(np.abs(matrix_to_show), 95)  # Use 95th percentile like example2
-                    print(f"Matrix stats: shape={matrix_to_show.shape}, min={np.min(matrix_to_show):.3f}, max={np.max(matrix_to_show):.3f}, mean={np.mean(matrix_to_show):.3f}, has_nan={np.any(np.isnan(matrix_to_show))}, has_inf={np.any(np.isinf(matrix_to_show))}, max_95={matrix_max:.3f}")
                     
                     im1 = ax1.imshow(matrix_to_show, vmin=-matrix_max, vmax=matrix_max,
                                    aspect='equal', interpolation='nearest', cmap='RdBu_r')
