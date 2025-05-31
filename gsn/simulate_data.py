@@ -15,7 +15,7 @@ from matplotlib.gridspec import GridSpec, GridSpecFromSubplotSpec
 
 def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0, 
                  noise_multiplier=1.0, align_alpha=0.0, align_k=0, random_seed=None, 
-                 want_fig=False, signal_cov=None, true_signal=None, cluster_units=False):
+                 want_fig=False, signal_cov=None, true_signal=None, cluster_units=False, verbose=True):
     """
     Generate synthetic neural data with controlled signal and noise properties.
     
@@ -84,9 +84,14 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
         # Build signal covariance matrix
         signal_cov = U_signal @ np.diag(signal_eigs) @ U_signal.T
 
-    # Possibly adjust noise eigenvectors alignment
+    # Align noise PCs to signal PCs if requested
     if align_k > 0:
-        U_noise = _adjust_alignment(U_signal, U_noise, align_alpha, align_k)
+        if align_alpha == 1.0:
+            U_noise = _shortcut_alignment(U_signal, U_noise, align_k)
+        else:
+            U_noise = _adjust_alignment_gradient_descent(
+                U_signal, U_noise, align_alpha, align_k, verbose=verbose
+            )
 
     # Create diagonal eigenvalues for noise
     noise_eigs = noise_multiplier / (np.arange(1, nvox+1) ** noise_decay)
@@ -105,9 +110,14 @@ def generate_data(nvox, ncond, ntrial, signal_decay=1.0, noise_decay=1.0,
         # Recompute signal eigendecomposition for consistency
         U_signal, signal_eigs, _ = np.linalg.svd(signal_cov)
         
-        # Re-adjust noise eigenvectors to maintain the requested alignment with the new signal eigenvectors
+        # Re-align noise after recalculating U_signal
         if align_k > 0:
-            U_noise = _adjust_alignment(U_signal, U_noise, align_alpha, align_k)
+            if align_alpha == 1.0:
+                U_noise = _shortcut_alignment(U_signal, U_noise, align_k)
+            else:
+                U_noise = _adjust_alignment_gradient_descent(
+                    U_signal, U_noise, align_alpha, align_k, verbose=verbose
+                )
             # Rebuild noise covariance matrix with the realigned eigenvectors
             noise_cov = U_noise @ np.diag(noise_eigs) @ U_noise.T
     else:
@@ -300,13 +310,81 @@ def _adjust_alignment(U_signal, U_noise, alpha, k, tolerance=1e-9):
             U_noise_adjusted[:, i] = v_i / v_i_norm
 
     # Verify the alignment
-    #for i in range(k):
+    for i in range(k):
         actual_alpha = np.abs(np.dot(U_signal[:, i], U_noise_adjusted[:, i]))
-        #if abs(actual_alpha - alpha) > tolerance:
-        #    warnings.warn(f"Alignment verification failed for dimension {i}: "
-        #                f"expected {alpha}, got {actual_alpha}")
+        if abs(actual_alpha - alpha) > tolerance:
+            print(f"Alignment verification failed for dimension {i}: "
+                       f"expected {alpha}, got {actual_alpha}")
 
     return U_noise_adjusted
+
+def _adjust_alignment_gradient_descent(U_signal, U_noise_init, alpha, k,
+                                        lr=5e-1, lambda_orth=1.0,
+                                        num_steps=10000,
+                                        tol_align=1e-6, tol_orth=1e-6,
+                                        verbose=True):
+    """
+    Gradient descent method to align U_noise to U_signal's top-k PCs
+    with dot(U_noise[:, i], U_signal[:, i]) ≈ alpha.
+
+    Returns:
+        U_noise_aligned (nvox, nvox): new orthonormal basis
+    """
+    U = U_noise_init.copy()
+    nvox = U.shape[0]
+    I = np.eye(nvox)
+
+    for step in range(1, num_steps + 1):
+        grad = np.zeros_like(U)
+        align_vals = []
+        for i in range(k):
+            dot = np.dot(U[:, i], U_signal[:, i])
+            align_vals.append(dot)
+            grad[:, i] = (dot - alpha) * U_signal[:, i]
+        M = U.T @ U - I
+        grad += lambda_orth * ((U @ M))
+        U -= lr * grad
+
+        max_align_err = max(abs(a - alpha) for a in align_vals)
+        orth_err = np.linalg.norm(U.T @ U - I)
+
+        #if verbose and step % max(1, num_steps // 10) == 0:
+            #print(f"Step {step}/{num_steps}: align_err={max_align_err:.2e}, orth_err={orth_err:.2e}")
+
+        if max_align_err < tol_align and orth_err < tol_orth:
+            if verbose:   
+                print(f"\t\tOptimization complete. Step {step}/{num_steps}: align_err={max_align_err:.2e}, orth_err={orth_err:.2e}")
+            return U
+               
+    print(f"Optimization did not converge. Step {step}/{num_steps}: align_err={max_align_err:.2e}, orth_err={orth_err:.2e}")
+
+    return U
+
+def _shortcut_alignment(U_signal, U_noise, k):
+    """
+    Directly align the first k noise PCs to the signal PCs without optimization.
+    """
+    U_noise_adj = U_noise.copy()
+    nvox = U_signal.shape[0]
+
+    # Set top k noise PCs equal to signal PCs
+    U_noise_adj[:, :k] = U_signal[:, :k]
+
+    # Orthonormalize remaining PCs via Gram-Schmidt
+    for i in range(k, nvox):
+        v = U_noise_adj[:, i].copy()
+        for j in range(k):
+            v -= np.dot(v, U_noise_adj[:, j]) * U_noise_adj[:, j]
+        norm = np.linalg.norm(v)
+        if norm < 1e-12:
+            # Choose a random orthogonal vector if degenerate
+            v = np.random.randn(nvox)
+            for j in range(k):
+                v -= np.dot(v, U_noise_adj[:, j]) * U_noise_adj[:, j]
+            norm = np.linalg.norm(v)
+        U_noise_adj[:, i] = v / norm
+
+    return U_noise_adj
 
 def plot_data_diagnostic(data, ground_truth, params):
     """
@@ -375,7 +453,7 @@ def plot_data_diagnostic(data, ground_truth, params):
     ax1a.semilogy(np.arange(nvox), signal_eigs, 'b-', label='Signal eigenvalues')
     ax1a.semilogy(np.arange(nvox), noise_eigs, 'r-', label='Noise eigenvalues')
     if align_k > 0:
-        ax1a.axvline(x=align_k-0.5, color='gray', linestyle='--', 
+        ax1a.axvline(x=align_k-1, color='gray', linestyle='--', 
                    label=f'Alignment cutoff (k={align_k})')
     ax1a.set_xlabel('Dimension')
     ax1a.set_ylabel('Eigenvalue (log scale)')
@@ -388,7 +466,7 @@ def plot_data_diagnostic(data, ground_truth, params):
     ax1b.plot(np.arange(nvox), signal_eigs, 'b-', label='Signal eigenvalues')
     ax1b.plot(np.arange(nvox), noise_eigs, 'r-', label='Noise eigenvalues')
     if align_k > 0:
-        ax1b.axvline(x=align_k-0.5, color='gray', linestyle='--',
+        ax1b.axvline(x=align_k-1, color='gray', linestyle='--',
                    label=f'Alignment cutoff (k={align_k})')
     ax1b.set_xlabel('Dimension')
     ax1b.set_ylabel('Eigenvalue (linear scale)')
