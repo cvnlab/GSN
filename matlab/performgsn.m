@@ -4,13 +4,40 @@ function results = performgsn(data,opt)
 %
 % <data> is voxels x conditions x trials. This indicates the measured
 %   responses to different conditions on distinct trials. The number of 
-%   trials must be at least 2.
+%   trials must be at least 2. Not all conditions need to have the full
+%   set of trials (see more information below).
 % <opt> (optional) is a struct with the following optional fields:
 %   <wantverbose> (optional) is whether to print status statements. Default: 1.
 %   <wantshrinkage> (optional) is whether to use shrinkage in the estimation
 %     of covariance. Default: 1.
 %
 % Perform GSN (generative modeling of signal and noise).
+%
+% Regarding uneven number of trials across conditions:
+% - It is acceptable that different conditions may have different numbers
+%   of trials. To indicate the lack of data for certain trials, you can
+%   include NaNs --- specifically, it is okay if data(:,i,j)
+%   consists of NaNs for some combination(s) of i and j.
+% - However, it must be the case that each condition has at least one 
+%   trial with valid data (i.e. data(:,i,:) must contain at least one
+%   valid trial).
+% - Also, there must be a sufficient number of conditions with at least
+%   two trials of valid data (for estimation and cross-validation purposes).
+%   If this is ever not the case, we will issue an error and crash.
+% - If the user provides data with uneven number of trials across
+%   conditions, our estimation strategy changes:
+%   - We estimate noise covariance for each condition (ignoring missing data)
+%     and average the estimated noise covariance across conditions. 
+%     Note that this approach does not perform any special compensation 
+%     for the differing numbers of trials available across conditions.
+%   - We determine the minimum number of trials and randomly select that
+%     many trials from each condition for the purposes of estimation of 
+%     data covariance. By doing so, we get a nice fully balanced data subset.
+%     Note that this approach introduces some stochasticity and
+%     ignores some portion of the data.
+%   - The biconvex optimization procedure proceeds as usual. (For the 
+%     weighting step, we calculate the equivalent "average number of trials" 
+%     that were actually used for noise covariance estimation.)
 %
 % Return:
 %   <results> as a struct with:
@@ -32,6 +59,7 @@ function results = performgsn(data,opt)
 %                0 means the first estimate was already positive semi-definite.
 %
 % History:
+% - 2025/07/11 - add support for uneven number of trials
 % - 2024/08/24 - add results.numiters
 % - 2024/04/28 - change default for wantshrinkage to 1.
 % - 2024/01/05 - (1) major change to use the biconvex optimization procedure --

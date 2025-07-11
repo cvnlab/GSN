@@ -108,6 +108,7 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %                0 means the first estimate was already positive semi-definite.
 %
 % History:
+% - 2025/07/11 - add internal case of NaNs allowed for GSN
 % - 2024/08/24 - add results.numiters
 % - 2024/01/05 - (1) major change to use the biconvex optimization procedure --
 %                    we now have cSb and cNb as the final estimates;
@@ -127,6 +128,10 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %     1 means use no scaling.
 %     2 means scale to match the un-regularized average variance
 %     Default: 0.
+%
+% internal notes:
+% - we allow NaN to support GSN!! (see performgsn.m)
+%   - note that this is allowed ONLY when opt.mode is not 0
 
 % inputs
 if ~exist('opt','var') || isempty(opt)
@@ -186,6 +191,14 @@ opt.scs = unique(opt.scs);
 assert(all(opt.scs>=0));
 assert(opt.simchunk >= 2);
 
+% check whether we are in the special case of uneven trials across conditions
+isuneven = any(isnan(data(:)));
+if isuneven  % if it seems like it is, let's do some stringent sanity checks
+  validcnt = sum(~any(isnan(data),1),3);  % 1 x conditions with number of trials with no NaNs
+  assert(all(validcnt >= 1),'all conditions must have at least 1 valid trial (no NaNs)');
+  assert(opt.mode ~= 0);  % we are NOT compatible with the RSA mode
+end
+
 %% %%%%% ESTIMATION OF COVARIANCES
 
 % estimate noise covariance
@@ -195,7 +208,36 @@ if opt.wantverbose, fprintf('done.\n');, end
 
 % estimate data covariance
 if opt.wantverbose, fprintf('Estimating data covariance...');, end
-[mnD,cD,shrinklevelD,nllD] = calcshrunkencovariance(mean(data,3)',        [],opt.shrinklevels,1);
+if isuneven
+
+  % this is a tricky case. we use the maximum number of trials such
+  % that all conditions have at least that many valid trials.
+  % we randomly pull from the available valid trials to meet that
+  % constraint. we mangle data to become this new subset.
+  % we also change ntrial to reflect this new "faked" data subset.
+  ntrial = min(validcnt);  % number of trials that we will enforce
+  newdata = cast([],class(data));
+  for p=1:size(data,2)
+    validix = ~any(isnan(data(:,p,:)),1);  % 1 x 1 x trials indicating where valid data is present
+    temp = data(:,p,validix);  % voxels x 1 x validtrials
+    ix = randperm(size(temp,3));
+    newdata(:,p,:) = temp(:,1,ix(1:ntrial));  % note that trial order may be shuffled! (no big deal)
+  end
+  data = newdata; clear newdata;
+
+  % now, data has been mangled/truncated!!! beware!
+  
+  % figure out ntrial to use in biconvex optimization (on average, how many trials were there?)
+  ntrialBC = sum(validcnt(validcnt>1))/ncond;
+  if ntrialBC < 1
+    warning('ntrialBC is lopsided! setting to 1');
+    ntrialBC = 1;
+  end
+
+else
+  ntrialBC = ntrial;  % in the standard case, ntrial in biconvex optimization is just ntrial
+end
+[mnD,cD,shrinklevelD,nllD] = calcshrunkencovariance(mean(data,3)',[],opt.shrinklevels,1);
 if opt.wantverbose, fprintf('done.\n');, end
 
 % estimate signal covariance
@@ -226,7 +268,7 @@ while 1
   cSb = constructnearestpsdcovariance(temp);
 
   % calculate new estimate of cNb
-  temp = (ncond*(ntrial-1)*ntrial^2) / (ncond*ntrial^2*(ntrial-1)+ncond-1) * cN + (ncond-1) / (ncond*ntrial^2*(ntrial-1)+ncond-1) * ntrial * (cD - cSb);
+  temp = (ncond*(ntrialBC-1)*ntrialBC^2) / (ncond*ntrialBC^2*(ntrialBC-1)+ncond-1) * cN + (ncond-1) / (ncond*ntrialBC^2*(ntrialBC-1)+ncond-1) * ntrialBC * (cD - cSb);
   cNb = constructnearestpsdcovariance(temp);
 
   % check deltas
