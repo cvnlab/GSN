@@ -220,7 +220,7 @@ if isuneven
   for p=1:size(data,2)
     validix = ~any(isnan(data(:,p,:)),1);  % 1 x 1 x trials indicating where valid data is present
     temp = data(:,p,validix);  % voxels x 1 x validtrials
-    ix = randperm(size(temp,3));
+    ix = deterministic_randperm(size(temp,3));
     newdata(:,p,:) = temp(:,1,ix(1:ntrial));  % note that trial order may be shuffled! (no big deal)
   end
   data = newdata; clear newdata;
@@ -387,7 +387,7 @@ case 0
     while 1
       for nn=1:length(splitnums)
         for si=iicur:iimax
-          temp = randperm(ntrial);
+          temp = deterministic_randperm(ntrial);
           datasplitr(nn,si) = nanreplace(opt.comparefun(opt.rdmfun(mean(data(:,:,temp(1:splitnums(nn))),3)), ...
                                                     opt.rdmfun(mean(data(:,:,temp(splitnums(nn)+(1:splitnums(nn)))),3))));
         end

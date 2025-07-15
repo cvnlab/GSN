@@ -2,7 +2,7 @@ import numpy as np
 import math
 import warnings
 import scipy.stats as stats
-from gsn.utilities import squish
+from gsn.utilities import squish, deterministic_randperm
 from gsn.calc_mv_gaussian_pdf import calc_mv_gaussian_pdf
 
 def calc_shrunken_covariance(data, 
@@ -118,11 +118,10 @@ def calc_shrunken_covariance(data,
     if np.ndim(data) == 3:
         
         # divide into training and validation
-        ii = np.random.choice(np.arange(data.shape[2]), 
-                             (int(np.round((1/leaveout)*data.shape[2]),)),
-                              replace = False)
-        
-        iinot = np.setdiff1d(np.arange(data.shape[2]), ii)
+        permuted_indices = deterministic_randperm(data.shape[2])
+        validation_size = int(np.round((1/leaveout)*data.shape[2]))
+        ii = permuted_indices[:validation_size]
+        iinot = permuted_indices[validation_size:]
         
         # handle the regular case of all valid trials
         if not isuneven:
@@ -157,11 +156,10 @@ def calc_shrunken_covariance(data,
     else:
         
         # divide into training and validation
-        ii = np.random.choice(np.arange(data.shape[0]), 
-                             (int(np.round((1/leaveout)*data.shape[0]),)),
-                              replace = False)
-        
-        iinot = np.setdiff1d(np.arange(data.shape[0]), ii)
+        permuted_indices = deterministic_randperm(data.shape[0])
+        validation_size = int(np.round((1/leaveout)*data.shape[0]))
+        ii = permuted_indices[:validation_size]
+        iinot = permuted_indices[validation_size:]
         
         # calculate covariance from the training data (variables x variables)
         c = np.cov(data[iinot].T, bias = False)

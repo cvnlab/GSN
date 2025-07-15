@@ -113,7 +113,10 @@ end
 if size(data,3) > 1
 
   % divide into training and validation
-  [~,ii,iinot] = picksubset(1:size(data,3),[leaveout 1]);
+  permuted_indices = deterministic_randperm(size(data,3));
+  validation_size = round((1/leaveout)*size(data,3));
+  ii = permuted_indices(1:validation_size);
+  iinot = permuted_indices(validation_size+1:end);
 
   % handle the regular case of all valid trials
   if ~isuneven
@@ -151,7 +154,10 @@ if size(data,3) > 1
 else
 
   % divide into training and validation
-  [~,ii,iinot] = picksubset(1:size(data,1),[leaveout 1]);
+  permuted_indices = deterministic_randperm(size(data,1));
+  validation_size = round((1/leaveout)*size(data,1));
+  ii = permuted_indices(1:validation_size);
+  iinot = permuted_indices(validation_size+1:end);
 
   % calculate covariance from the training data (variables x variables)
   c = cov(data(iinot,:));

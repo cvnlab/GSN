@@ -142,3 +142,28 @@ def zerodiv(x, y, val=0, wantcaution=1):
                 f = x / tmp[:, np.newaxis]
             f[bad] = val
         return f
+    
+def deterministic_randperm(n, seed=42):
+    """
+    Create a deterministic random permutation that matches MATLAB's randperm exactly.
+    
+    MATLAB's randperm(n) algorithm:
+    1. Generate n random numbers using the specified seed
+    2. Return the indices that would sort these random numbers (argsort)
+    
+    This matches MATLAB's implementation exactly, unlike numpy's permutation 
+    which uses a different shuffling algorithm.
+    
+    Parameters:
+    n : int
+        The size of the permutation (0 to n-1)
+    seed : int, optional
+        Random seed for reproducibility. Default is 42.
+        
+    Returns:
+    numpy.ndarray
+        Array of indices from 0 to n-1 in permuted order, matching MATLAB's randperm
+    """
+    rng = np.random.RandomState(seed)  # Ensures compatibility with MATLAB's 'twister'
+    random_values = rng.random(n)      # Generate n random numbers
+    return np.argsort(random_values)   # Return indices that sort the random values

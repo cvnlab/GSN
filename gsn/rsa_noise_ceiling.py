@@ -2,7 +2,7 @@ import numpy as np
 import scipy
 import itertools
 import warnings
-from gsn.utilities import nanreplace
+from gsn.utilities import nanreplace, deterministic_randperm
 from gsn.calc_cod import calc_cod
 from gsn.calc_shrunken_covariance import calc_shrunken_covariance
 from gsn.construct_nearest_psd_covariance import construct_nearest_psd_covariance
@@ -207,7 +207,7 @@ def rsa_noise_ceiling(data, opt = None):
         for p in range(data.shape[1]):
             validix = ~np.any(np.isnan(data[:, p, :]), axis=0)  # 1 x trials indicating where valid data is present
             temp = data[:, p, validix]  # voxels x validtrials
-            ix = np.random.permutation(temp.shape[1])
+            ix = deterministic_randperm(temp.shape[1])
             newdata[:, p, :] = temp[:, ix[:ntrial]]  # note that trial order may be shuffled! (no big deal)
         data = newdata
         del newdata
@@ -355,7 +355,7 @@ def rsa_noise_ceiling(data, opt = None):
             while True:
                 for nn in range(len(splitnums)):
                     for si in range(iicur, iimax):
-                        temp = np.random.permutation(ntrial)
+                        temp = deterministic_randperm(ntrial)
                         datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
                                                                         opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
                 robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
