@@ -98,9 +98,15 @@ end
 % check whether we are in the special case of uneven trials across conditions
 isuneven = any(isnan(data(:)));
 if isuneven  % if it seems like it is, let's do some stringent sanity checks
+  assert(ndims(data) == 3,'NaNs are allowed only in the multi-case scenario (3D data required)');
   assert(size(data,3) > 1,'NaNs are allowed only in the multi-case scenario (number of cases at least 2)');
   validcnt = sum(~any(isnan(data),2),1);  % 1 x 1 x cases with number of rows that DO NOT have NaNs
   assert(all(validcnt(:) >= 1),'all conditions must have at least 1 valid trial (no NaNs)');
+  
+  % Additional check for edge cases: ensure we have enough conditions with >=2 trials for cross-validation
+  repconds = sum(validcnt(:) >= 2);
+  assert(repconds >= 2, ...
+    sprintf('need at least 2 conditions with 2+ trials for cross-validation, but only have %d', repconds));
 end
 
 % handle special scenario

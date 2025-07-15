@@ -105,9 +105,14 @@ def calc_shrunken_covariance(data,
     # check whether we are in the special case of uneven trials across conditions
     isuneven = np.any(np.isnan(data))
     if isuneven:  # if it seems like it is, let's do some stringent sanity checks
+        assert np.ndim(data) == 3, 'NaNs are allowed only in the multi-case scenario (3D data required)'
         assert data.shape[2] > 1, 'NaNs are allowed only in the multi-case scenario (number of cases at least 2)'
         validcnt = np.sum(~np.any(np.isnan(data), axis=1), axis=0)  # 1 x cases with number of rows that DO NOT have NaNs
         assert np.all(validcnt >= 1), 'all conditions must have at least 1 valid trial (no NaNs)'
+        
+        # Additional check for edge cases: ensure we have enough conditions with >=2 trials for cross-validation
+        conditions_with_multiple_trials = np.sum(validcnt >= 2)
+        assert conditions_with_multiple_trials >= 2, f'need at least 2 conditions with 2+ trials for cross-validation, but only have {conditions_with_multiple_trials}'
 
     # handle special scenario
     if np.ndim(data) == 3:
