@@ -447,7 +447,8 @@ def rsa_noise_ceiling(data, opt = None):
             signal = np.random.multivariate_normal(mnS.squeeze(), cSb_rsa, opt['ncconds'])
             noise = np.random.multivariate_normal(mnN.squeeze(), cNb / opt['nctrials'], opt['ncconds'])
             measurement = signal + noise
-            ncdist[rr] = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
+            result = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
+            ncdist[rr] = result.item() if hasattr(result, 'item') else result
         
         # Compute median across simulations
         nc = np.median(ncdist)
