@@ -116,6 +116,7 @@ def rsa_noise_ceiling(data, opt = None):
                 0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2025/07/11 - add internal case of NaNs allowed for GSN
     - 2024/09/11 - misc. bug fixes
     - 2024/08/24 - add results['numiters']
     - 2024/01/05:
@@ -137,6 +138,10 @@ def rsa_noise_ceiling(data, opt = None):
         1 means use no scaling.
         2 means scale to match the un-regularized average variance.
         Default: 0.
+
+    Internal notes:
+    - We allow GSN to support input data with NaN!! (see perform_gsn.py)
+      - Note that this is allowed ONLY when opt['mode'] is not 0
     """
 
     # Initialize opt as an empty dictionary if it is None
@@ -170,6 +175,13 @@ def rsa_noise_ceiling(data, opt = None):
     assert np.all(opt['scs'] >= 0), "All elements in 'scs' should be non-negative."
     assert opt['simchunk'] >= 2, "simchunk must be 2 or greater."
 
+    # check whether we are in the special case of uneven trials across conditions
+    isuneven = np.any(np.isnan(data))
+    if isuneven:  # if it seems like it is, let's do some stringent sanity checks
+        validcnt = np.sum(~np.any(np.isnan(data), axis=0), axis=1)  # 1 x conditions with number of trials with no NaNs
+        assert np.all(validcnt >= 1), 'all conditions must have at least 1 valid trial (no NaNs)'
+        assert opt['mode'] != 0, 'we are NOT compatible with the RSA mode'
+
     # ESTIMATION OF COVARIANCES
 
     # estimate noise covariance
@@ -183,6 +195,34 @@ def rsa_noise_ceiling(data, opt = None):
     # estimate data covariance
     if opt['wantverbose']:
         print('Estimating data covariance...', end='')
+    if isuneven:
+
+        # this is a tricky case. we use the maximum number of trials such
+        # that all conditions have at least that many valid trials.
+        # we randomly pull from the available valid trials to meet that
+        # constraint. we mangle data to become this new subset.
+        # we also change ntrial to reflect this new "faked" data subset.
+        ntrial = int(np.min(validcnt))  # number of trials that we will enforce
+        newdata = np.empty((data.shape[0], data.shape[1], ntrial), dtype=data.dtype)
+        for p in range(data.shape[1]):
+            validix = ~np.any(np.isnan(data[:, p, :]), axis=0)  # 1 x trials indicating where valid data is present
+            temp = data[:, p, validix]  # voxels x validtrials
+            ix = np.random.permutation(temp.shape[1])
+            newdata[:, p, :] = temp[:, ix[:ntrial]]  # note that trial order may be shuffled! (no big deal)
+        data = newdata
+        del newdata
+
+        # now, data has been mangled/truncated!!! beware!
+        
+        # figure out ntrial to use in biconvex optimization (on average, how many trials were there?)
+        ntrialBC = np.sum(validcnt[validcnt > 1]) / ncond
+        if ntrialBC < 1:
+            warnings.warn('ntrialBC is lopsided! setting to 1')
+            ntrialBC = 1
+
+    else:
+        ntrialBC = ntrial  # in the standard case, ntrial in biconvex optimization is just ntrial
+    
     mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(np.mean(data, axis=2).T,
                                                          5, opt['shrinklevels'], 1)
     if opt['wantverbose']:
@@ -217,8 +257,8 @@ def rsa_noise_ceiling(data, opt = None):
         cSb, _ = construct_nearest_psd_covariance(temp)
 
         # calculate new estimate of cNb
-        temp = (ncond * (ntrial - 1) * ntrial**2) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * cN \
-               + (ncond - 1) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * ntrial * (cD - cSb)
+        temp = (ncond * (ntrialBC - 1) * ntrialBC**2) / (ncond * ntrialBC**2 * (ntrialBC - 1) + ncond - 1) * cN \
+               + (ncond - 1) / (ncond * ntrialBC**2 * (ntrialBC - 1) + ncond - 1) * ntrialBC * (cD - cSb)
         cNb, _ = construct_nearest_psd_covariance(temp)
 
         # check deltas
@@ -399,21 +439,25 @@ def rsa_noise_ceiling(data, opt = None):
                             'Something may be wrong; results may be inaccurate. Consider increasing simchunk, simthresh, and/or maxsimnum.')
 
     # Performing Monte Carlo simulations for RSA noise ceiling
+    if opt['ncsims'] > 0:
+        if opt['wantverbose']:
+            print('Performing Monte Carlo simulations...', end='')
+        ncdist = np.zeros(opt['ncsims'])
+        for rr in range(opt['ncsims']):
+            signal = np.random.multivariate_normal(mnS.squeeze(), cSb_rsa, opt['ncconds'])
+            noise = np.random.multivariate_normal(mnN.squeeze(), cNb / opt['nctrials'], opt['ncconds'])
+            measurement = signal + noise
+            ncdist[rr] = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
+        
+        # Compute median across simulations
+        nc = np.median(ncdist)
+    else:
+        # No simulations requested
+        ncdist = np.array([])
+        nc = np.nan
+        
     if opt['wantverbose']:
-        print('Performing Monte Carlo simulations...', end='')
-    ncdist = np.zeros(opt['ncsims'])
-    for rr in range(opt['ncsims']):
-        signal = np.random.multivariate_normal(mnS.squeeze(), cSb_rsa, opt['ncconds'])
-        noise = np.random.multivariate_normal(mnN.squeeze(), cNb / opt['nctrials'], opt['ncconds'])
-        measurement = signal + noise
-        ncdist[rr] = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
-
-    if opt['wantverbose']:
-        print('done.')
-
-    # Finish up
-    # Compute median across simulations
-    nc = np.median(ncdist)
+            print('done.')
 
     # Prepare additional outputs
     results = {
