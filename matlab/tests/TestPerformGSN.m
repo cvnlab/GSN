@@ -229,6 +229,54 @@ classdef TestPerformGSN < matlab.unittest.TestCase
             fprintf('Error conditions test passed!\n');
         end
         
+        function testCalcShrunkenCovarianceValidation(testCase)
+            % Test validation assertions in calcshrunkencovariance.m
+            fprintf('Testing calcshrunkencovariance validation assertions...\n');
+            
+            % Test 1: NaNs in 2D data should fail
+            data_2d_nan = randn(20, 10);
+            data_2d_nan(1, 1) = NaN;
+            
+            testCase.verifyError(@() calcshrunkencovariance(data_2d_nan), '', ...
+                'Should error with NaNs in 2D data');
+            
+            % Test 2: All trials NaN for one condition should fail
+            data_all_nan = randn(5, 10, 8);
+            data_all_nan(:, :, 1) = NaN; % All trials for first condition
+            
+            testCase.verifyError(@() calcshrunkencovariance(data_all_nan), '', ...
+                'Should error when all conditions must have at least 1 valid trial');
+            
+            % Test 3: Insufficient conditions with multiple trials should fail
+            % Create a case that will pass basic validation but fail cross-validation
+            data_insufficient = randn(4, 10, 5);  % 5 conditions with 4 observations each
+            % Make most conditions have only 1 observation
+            data_insufficient(2:end, :, 1) = NaN;  % Condition 1: only 1 observation
+            data_insufficient(2:end, :, 2) = NaN;  % Condition 2: only 1 observation
+            data_insufficient(2:end, :, 3) = NaN;  % Condition 3: only 1 observation
+            data_insufficient(3:end, :, 4) = NaN;  % Condition 4: only 2 observations
+            % Condition 5 keeps all 4 observations - so only 1 condition has 2+ observations
+            
+            testCase.verifyError(@() calcshrunkencovariance(data_insufficient), '', ...
+                'Should error when insufficient conditions for cross-validation');
+            
+            % Test 4: Valid uneven data should work
+            data_valid = randn(4, 10, 5);  % 5 conditions with up to 4 observations each
+            data_valid(4, :, 1) = NaN;     % Condition 1: 3 observations
+            data_valid(3:4, :, 2) = NaN;   % Condition 2: 2 observations
+            % Conditions 3,4,5 have all 4 observations
+            
+            [mn, c, shrinklevel, nll] = calcshrunkencovariance(data_valid);
+            testCase.verifyTrue(isstruct(struct('mn', mn, 'c', c, 'shrinklevel', shrinklevel, 'nll', nll)), ...
+                'Valid uneven data should process successfully');
+            testCase.verifyEqual(size(mn), [1, 10], 'Mean should have correct dimensions');
+            testCase.verifyEqual(size(c), [10, 10], 'Covariance should have correct dimensions');
+            testCase.verifyTrue(shrinklevel >= 0 && shrinklevel <= 1, 'Shrinkage level should be in [0,1]');
+            testCase.verifyEqual(length(nll), 51, 'Should have 51 log-likelihood values by default');
+            
+            fprintf('CalcShrunkenCovariance validation test passed!\n');
+        end
+        
         function testNumericalStability(testCase)
             % Test numerical stability with extreme values
             fprintf('Testing numerical stability...\n');
