@@ -130,7 +130,7 @@ function [nc,ncdist,results] = rsanoiseceiling(data,opt)
 %     Default: 0.
 %
 % internal notes:
-% - we allow NaN to support GSN!! (see performgsn.m)
+% - we allow GSN to support data with NaN!! (see performgsn.m)
 %   - note that this is allowed ONLY when opt.mode is not 0
 
 % inputs
@@ -477,15 +477,19 @@ end
 
 %% %%%%% MONTE CARLO SIMULATIONS FOR RSA NOISE CEILING
 
-if opt.wantverbose, fprintf('Performing Monte Carlo simulations...');, end
-
 % perform Monte Carlo simulations
-ncdist = zeros(1,opt.ncsims);
-for rr=1:opt.ncsims
-  signal = mvnrnd(mnS,cSb_rsa,opt.ncconds);           % ncconds x voxels
-  noise  = mvnrnd(mnN,cNb/opt.nctrials,opt.ncconds);  % ncconds x voxels
-  measurement = signal + noise;                      % ncconds x voxels
-  ncdist(rr) = nanreplace(opt.comparefun(opt.rdmfun(signal'),opt.rdmfun(measurement')));
+if opt.ncsims > 0
+  if opt.wantverbose, fprintf('Performing Monte Carlo simulations...');, end
+  ncdist = zeros(1,opt.ncsims);
+  for rr=1:opt.ncsims
+    signal = mvnrnd(mnS,cSb_rsa,opt.ncconds);           % ncconds x voxels
+    noise  = mvnrnd(mnN,cNb/opt.nctrials,opt.ncconds);  % ncconds x voxels
+    measurement = signal + noise;                      % ncconds x voxels
+    ncdist(rr) = nanreplace(opt.comparefun(opt.rdmfun(signal'),opt.rdmfun(measurement')));
+  end
+else
+  % no simulations requested
+  ncdist = [];
 end
 
 if opt.wantverbose, fprintf('done.\n');, end
@@ -493,7 +497,11 @@ if opt.wantverbose, fprintf('done.\n');, end
 %% %%%%% FINISH UP
 
 % compute median across simulations
-nc = median(ncdist);
+if opt.ncsims > 0
+  nc = median(ncdist);
+else
+  nc = NaN;
+end
 
 % prepare additional outputs
 clear results;
@@ -584,7 +592,11 @@ if opt.mode == 0 && ~isequal(opt.wantfig,0)
   set(straightline(sc,'v','k-'),'LineWidth',3);
   xlabel('Scaling factor');
   ylabel('R^2 between model and data (%)');
-  title(sprintf('sc=%.2f, nc=%.3f +/- %.3f',sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
+  if opt.ncsims > 0
+    title(sprintf('sc=%.2f, nc=%.3f +/- %.3f',sc,nc,iqr(ncdist)/2/sqrt(length(ncdist))));
+  else
+    title(sprintf('sc=%.2f, nc=%.3f (no sims)',sc,nc));
+  end
   
   if isequal(opt.wantfig,1)
   else
