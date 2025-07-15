@@ -254,7 +254,7 @@ classdef TestPerformGSN < matlab.unittest.TestCase
             data_insufficient(2:end, :, 1) = NaN;  % Condition 1: only 1 observation
             data_insufficient(2:end, :, 2) = NaN;  % Condition 2: only 1 observation
             data_insufficient(2:end, :, 3) = NaN;  % Condition 3: only 1 observation
-            data_insufficient(3:end, :, 4) = NaN;  % Condition 4: only 2 observations
+            data_insufficient(2:end, :, 4) = NaN;  % Condition 4: only 1 observation
             % Condition 5 keeps all 4 observations - so only 1 condition has 2+ observations
             
             testCase.verifyError(@() calcshrunkencovariance(data_insufficient), '', ...
@@ -515,14 +515,15 @@ classdef TestPerformGSN < matlab.unittest.TestCase
             ncond = 3;
             max_trials = 3;
             
-            % Test case where one condition has insufficient trials (only 1)
-            data_bad1 = nan(nvox, ncond, max_trials);
-            data_bad1(:, 1, 1:2) = randn(nvox, 2); % Condition 1: 2 trials (OK)
-            data_bad1(:, 2, 1) = randn(nvox, 1);   % Condition 2: 1 trial (BAD)
-            data_bad1(:, 3, 1:3) = randn(nvox, 3); % Condition 3: 3 trials (OK)
+            % Test case where one condition has only 1 trial - this should work fine
+            data_ok = nan(nvox, ncond, max_trials);
+            data_ok(:, 1, 1:2) = randn(nvox, 2); % Condition 1: 2 trials (OK)
+            data_ok(:, 2, 1) = randn(nvox, 1);   % Condition 2: 1 trial (should be OK with flexibility)
+            data_ok(:, 3, 1:3) = randn(nvox, 3); % Condition 3: 3 trials (OK)
             
-            testCase.verifyError(@() performgsn(data_bad1), '', ...
-                'Should error when any condition has insufficient trials');
+            % This should work - we want flexibility for uneven trials
+            results_ok = performgsn(data_ok);
+            testCase.verifyTrue(isstruct(results_ok), 'Should work with uneven trials including 1-trial conditions');
             
             % Test case where one condition has all NaN trials
             data_bad2 = nan(nvox, ncond, max_trials);

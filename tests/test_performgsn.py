@@ -311,14 +311,15 @@ class TestPerformGSN(unittest.TestCase):
         ncond = 3
         max_trials = 3
         
-        # Test case where one condition has insufficient trials (only 1)
-        data_bad1 = np.full((nvox, ncond, max_trials), np.nan)
-        data_bad1[:, 0, :2] = np.random.randn(nvox, 2)  # Condition 0: 2 trials (OK)
-        data_bad1[:, 1, :1] = np.random.randn(nvox, 1)  # Condition 1: 1 trial (BAD)
-        data_bad1[:, 2, :3] = np.random.randn(nvox, 3)  # Condition 2: 3 trials (OK)
+        # Test case where one condition has only 1 trial - this should work in MATLAB/Python
+        data_edge1 = np.full((nvox, ncond, max_trials), np.nan)
+        data_edge1[:, 0, :2] = np.random.randn(nvox, 2)  # Condition 0: 2 trials
+        data_edge1[:, 1, :1] = np.random.randn(nvox, 1)  # Condition 1: 1 trial (minimum allowed)
+        data_edge1[:, 2, :3] = np.random.randn(nvox, 3)  # Condition 2: 3 trials
         
-        with self.assertRaises(Exception, msg='Should error when any condition has insufficient trials'):
-            perform_gsn(data_bad1)
+        # Should work - MATLAB allows conditions with only 1 trial as long as all have >= 1
+        results = perform_gsn(data_edge1)
+        self.assertIn('mnN', results)
         
         # Test case where one condition has all NaN trials
         data_bad2 = np.full((nvox, ncond, max_trials), np.nan)

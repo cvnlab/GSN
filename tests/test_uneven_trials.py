@@ -151,11 +151,11 @@ class TestUnevenTrials:
         data_insufficient[1:, :, 0] = np.nan  # Case 0: only 1 observation
         data_insufficient[1:, :, 1] = np.nan  # Case 1: only 1 observation
         data_insufficient[1:, :, 2] = np.nan  # Case 2: only 1 observation
-        data_insufficient[2:, :, 3] = np.nan  # Case 3: only 2 observations
+        data_insufficient[1:, :, 3] = np.nan  # Case 3: only 1 observation
         # Case 4: keep all 4 observations - so only 1 case has 2+ observations
         
-        # This should fail either at the initial check or during validation
-        with pytest.raises(AssertionError, match="(need at least 2 conditions with 2|validation data did not have any conditions)"):
+        # This should fail because we need at least 2 conditions with 2+ trials
+        with pytest.raises(AssertionError, match="need at least 2 conditions with 2"):
             calc_shrunken_covariance(data_insufficient)
             
     def test_rsa_noise_ceiling_uneven_gsn_mode(self):
