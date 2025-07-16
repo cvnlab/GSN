@@ -272,16 +272,22 @@ while 1
   cNb = constructnearestpsdcovariance(temp);
 
   % check deltas
-  cScheck = corr(cSb_old(:),cSb(:));
-  cNcheck = corr(cNb_old(:),cNb(:));
-  if 0
-    fprintf('1: cSb old to new is %.5f\n',cScheck);
-    fprintf('2: cNb old to new is %.5f\n',cNcheck);
-  end
+  if size(cSb,1)==1  % handle special case of only one unit
+    if abs(cSb_old - cSb) < 1e-5 && abs(cNb_old - cNb) < 1e-5
+      break;
+    end
+  else
+    cScheck = corr(cSb_old(:),cSb(:));
+    cNcheck = corr(cNb_old(:),cNb(:));
+    if 0
+      fprintf('1: cSb old to new is %.5f\n',cScheck);
+      fprintf('2: cNb old to new is %.5f\n',cNcheck);
+    end
   
-  % convergence?
-  if cScheck > 0.999 && cNcheck > 0.999
-    break;
+    % convergence?
+    if cScheck > 0.999 && cNcheck > 0.999
+      break;
+    end
   end
   
   % update

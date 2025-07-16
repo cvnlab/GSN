@@ -227,7 +227,7 @@ shrinklevel = shrinklevels(min0ix);
 if length(nll) > 1
   if all(isnan(nll))
     warning('all covariance matrices were singular');
-  elseif length(unique(nll(isfinite(nll)))) == 1
+  elseif length(unique(nll(isfinite(nll)))) == 1 && size(c,1)>1
     warning('there was only one unique finite log-likelihood; something might be wrong?');
   elseif ~isfinite(min0)
     warning('selected likelihood is not finite; something might be wrong?');
