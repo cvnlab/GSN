@@ -132,7 +132,11 @@ def calc_shrunken_covariance(data,
             # average across the results of each case.
             c = 0
             for pp in range(len(iinot)):
-                c = c + np.cov(data[:,:,iinot[pp]].T, bias=False) / len(iinot)
+                c_temp = np.cov(data[:,:,iinot[pp]].T, bias=False)
+                # Handle single variable case where np.cov returns a scalar
+                if np.ndim(c_temp) == 0:
+                    c_temp = np.array([[c_temp]])
+                c = c + c_temp / len(iinot)
         
         else:
 
@@ -145,7 +149,11 @@ def calc_shrunken_covariance(data,
                     validcnt = validcnt + 1
                     # Use only valid rows for covariance calculation (equivalent to matlab 'omitrows' in cov)
                     valid_data = data[validix,:,iinot[pp]]
-                    c = c + np.cov(valid_data.T, bias=False)
+                    c_temp = np.cov(valid_data.T, bias=False)
+                    # Handle single variable case where np.cov returns a scalar
+                    if np.ndim(c_temp) == 0:
+                        c_temp = np.array([[c_temp]])
+                    c = c + c_temp
             assert validcnt >= 1, 'training data did not have a condition with at least two valid observations'
             c = c / validcnt
 
@@ -163,6 +171,10 @@ def calc_shrunken_covariance(data,
         
         # calculate covariance from the training data (variables x variables)
         c = np.cov(data[iinot].T, bias = False)
+        
+        # Handle single variable case where np.cov returns a scalar
+        if np.ndim(c) == 0:
+            c = np.array([[c]])
         
         # If covariance matrix is singular or SVD doesn't converge, add small diagonal term
         try:
@@ -184,7 +196,9 @@ def calc_shrunken_covariance(data,
         
         # shrink the covariance (off-diagonal elements mix with 0)
         c2 = c * shrinklevels[p]
-        np.fill_diagonal(c2, np.diag(c)) # preserve the diagonal elements
+        if c.shape[0] > 1:
+            np.fill_diagonal(c2, np.diag(c)) # preserve the diagonal elements
+        # For single variable case, c2 is already correct (it's just the variance)
         
         # record
         covs[:,:,p] = c2
@@ -242,7 +256,7 @@ def calc_shrunken_covariance(data,
     if len(nll) > 1:
         if np.all(np.isnan(nll)):
             warnings.warn('All covariance matrices were singular.')
-        elif len(np.unique(nll[np.isfinite(nll)])) == 1:
+        elif len(np.unique(nll[np.isfinite(nll)])) == 1 and c.shape[0] > 1:
             warnings.warn('There was only one unique finite log-likelihood; something might be wrong?')
         elif not np.isfinite(min0ix):
             warnings.warn('Selected likelihood is not finite; something might be wrong?')
@@ -270,7 +284,11 @@ def calc_shrunken_covariance(data,
                 c = c * (len(iinot) / data.shape[2])
                 
                 for pp in range(len(ii)):
-                    c += np.cov(data[:,:,ii[pp]].T, bias = False) / data.shape[2]
+                    c_temp = np.cov(data[:,:,ii[pp]].T, bias = False)
+                    # Handle single variable case where np.cov returns a scalar
+                    if np.ndim(c_temp) == 0:
+                        c_temp = np.array([[c_temp]])
+                    c += c_temp / data.shape[2]
             
             else:
 
@@ -281,7 +299,11 @@ def calc_shrunken_covariance(data,
                     if np.sum(validix) > 1:
                         validcnt = validcnt + 1
                         valid_data = data[validix,:,ii[pp]]
-                        c = c + np.cov(valid_data.T, bias = False)
+                        c_temp = np.cov(valid_data.T, bias = False)
+                        # Handle single variable case where np.cov returns a scalar
+                        if np.ndim(c_temp) == 0:
+                            c_temp = np.array([[c_temp]])
+                        c = c + c_temp
                 c = c / validcnt
 
             # and the mean stays zero, no problem
@@ -291,11 +313,16 @@ def calc_shrunken_covariance(data,
             
             # calculate mean and covariance from all the data
             c = np.cov(data.T, bias = False)
+            # Handle single variable case where np.cov returns a scalar
+            if np.ndim(c) == 0:
+                c = np.array([[c]])
             mn = np.mean(data, axis=0)
             
         # apply shrinkage
         c2 = c * shrinklevel
-        np.fill_diagonal(c2, np.diag(c)) # preserve the diagonal elements
+        if c.shape[0] > 1:
+            np.fill_diagonal(c2, np.diag(c)) # preserve the diagonal elements
+        # For single variable case, c2 is already correct (it's just the variance)
         c = c2
               
     # otherwise we just extract the desired shrunken estimate

@@ -76,6 +76,32 @@ class TestPerformGSN(unittest.TestCase):
         # Condition 2: only 2 trials (set trials 2,3,4,5 to NaN)
         self.data_uneven[:, 2, 2:] = np.nan
         # Leave other conditions with all 6 trials
+        
+    def test_single_unit(self):
+        """Test basic functionality with simple synthetic data, single unit case"""
+        print('Testing single unit...')
+        
+        # Generate simple test data: voxels x conditions x trials
+        nvox = 1
+        ncond = 10
+        ntrial = 4
+        
+        # Create data with signal + noise structure
+        np.random.seed(42)  # For reproducibility
+        signal = 2 * np.random.randn(nvox, ncond)
+        data = np.tile(signal[:, :, np.newaxis], (1, 1, ntrial)) + 0.5 * np.random.randn(nvox, ncond, ntrial)
+        
+        # Test basic call
+        results = perform_gsn(data)
+        
+        # Verify output structure
+        self.assertIsInstance(results, dict, 'Output should be a dict')
+        
+        # Check required fields
+        required_fields = ['mnN', 'cN', 'cNb', 'shrinklevelN', 'shrinklevelD',
+                          'mnS', 'cS', 'cSb', 'ncsnr', 'numiters']
+        for field in required_fields:
+            self.assertIn(field, results, f'Missing field: {field}')
     
     def test_basic_functionality(self):
         """Test basic functionality with simple synthetic data"""

@@ -262,12 +262,16 @@ def rsa_noise_ceiling(data, opt = None):
         cNb, _ = construct_nearest_psd_covariance(temp)
 
         # check deltas
-        cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
-        cNcheck = np.corrcoef(cNb_old.flatten(), cNb.flatten())[0, 1]
+        if cSb.shape[0] == 1:  # handle special case of only one unit
+            if abs(cSb_old - cSb) < 1e-5 and abs(cNb_old - cNb) < 1e-5:
+                break
+        else:
+            cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
+            cNcheck = np.corrcoef(cNb_old.flatten(), cNb.flatten())[0, 1]
 
-        # convergence?
-        if cScheck > 0.999 and cNcheck > 0.999:
-            break
+            # convergence?
+            if cScheck > 0.999 and cNcheck > 0.999:
+                break
 
         # update
         numiters += 1
