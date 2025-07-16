@@ -76,7 +76,7 @@ def construct_nearest_psd_covariance(c1):
                 
         # calculate how good the approximation is
         if c1.size == 1:
-            # For 1x1 matrices, correlation is perfect (both are the same scalar)
+            # For 1x1 matrices, correlation is undefined (both are the same scalar)
             rapprox = np.nan
         else:
             rapprox = stats.pearsonr(c1.reshape(-1), c2.reshape(-1))[0]
