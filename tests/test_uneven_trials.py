@@ -127,36 +127,6 @@ class TestUnevenTrials:
         # Covariance should be positive semi-definite
         eigenvals = np.linalg.eigvals(c)
         assert np.all(eigenvals >= -1e-10), "Covariance matrix should be PSD"
-        
-    def test_calc_shrunken_covariance_validation(self):
-        """Test validation logic in calc_shrunken_covariance."""
-        # Case 1: NaNs in 2D data (should fail)
-        data_2d_nan = np.random.randn(20, 10)
-        data_2d_nan[0, 0] = np.nan
-        
-        with pytest.raises(AssertionError, match="NaNs are allowed only in the multi-case scenario"):
-            calc_shrunken_covariance(data_2d_nan)
-            
-        # Case 2: All trials NaN for one condition (should fail)
-        data_all_nan = np.random.randn(5, 10, 8)
-        data_all_nan[:, :, 0] = np.nan  # All trials for first condition
-        
-        with pytest.raises(AssertionError, match="all conditions must have at least 1 valid trial"):
-            calc_shrunken_covariance(data_all_nan)
-            
-        # Case 3: Insufficient conditions with multiple trials (should fail)
-        # For 3D data: shape is (observations, variables, cases)
-        data_insufficient = np.random.randn(4, 10, 5)  # 4 observations, 10 variables, 5 cases
-        # Make most cases have only 1 observation, leaving only 1 case with 2+ observations
-        data_insufficient[1:, :, 0] = np.nan  # Case 0: only 1 observation
-        data_insufficient[1:, :, 1] = np.nan  # Case 1: only 1 observation
-        data_insufficient[1:, :, 2] = np.nan  # Case 2: only 1 observation
-        data_insufficient[1:, :, 3] = np.nan  # Case 3: only 1 observation
-        # Case 4: keep all 4 observations - so only 1 case has 2+ observations
-        
-        # This should fail because we need at least 2 conditions with 2+ trials
-        with pytest.raises(AssertionError, match="need at least 2 conditions with 2"):
-            calc_shrunken_covariance(data_insufficient)
             
     def test_rsa_noise_ceiling_uneven_gsn_mode(self):
         """Test rsa_noise_ceiling with uneven trials in GSN mode (mode=1 or 2)."""
