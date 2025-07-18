@@ -29,6 +29,20 @@ def construct_nearest_psd_covariance(c1):
     print(rapprox)
     """
     
+    # To match matlab behavior for cases where input is a scalar or 1x1 numpy array
+    if np.isscalar(c1) or (hasattr(c1, 'shape') and c1.shape == (1, 1)):
+        # Extract scalar value for computation
+        scalar_val = c1.item() if hasattr(c1, 'item') else c1
+        rapprox = 1 if scalar_val >= 0 else np.nan
+        
+        # Compute result and preserve input format
+        result_val = max(0, scalar_val)
+        if np.isscalar(c1):
+            return result_val, rapprox
+        else:
+            # Return as same shaped array
+            return np.array([[result_val]]), rapprox
+    
     # ensure symmetric
     c1 = (c1 + c1.T)/2
     
@@ -50,7 +64,7 @@ def construct_nearest_psd_covariance(c1):
             c2 = (c1 + v.T @ np.diag(s) @ v) / 2  # Average with symmetric polar factor
         except np.linalg.LinAlgError:  # If SVD fails to converge
             # Eigendecomposition
-            v, d = np.linalg.eig(c1)
+            d, v = np.linalg.eig(c1)
             d[d < 0] = 0
             c2 = v @ np.diag(d) @ v.T
             
@@ -75,10 +89,13 @@ def construct_nearest_psd_covariance(c1):
             c2, _ = construct_nearest_psd_covariance(c2)
                 
         # calculate how good the approximation is
-        rapprox = stats.pearsonr(c1.reshape(-1), c2.reshape(-1))[0]
+        c1_flat = c1.reshape(-1)
+        c2_flat = c2.reshape(-1)
+        
+        rapprox = stats.pearsonr(c1_flat, c2_flat)[0]
         
         # replace
         c1 = c2
-        
+            
         return c1, rapprox
     
