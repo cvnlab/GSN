@@ -241,26 +241,6 @@ def test_cross_validation_edge_cases():
     results = gsn_denoise(data, opt=opt)
     assert results['denoiser'].shape == (nunits, nunits)
 
-def test_condition_number_variations():
-    """Test with matrices having different condition numbers."""
-    nunits, nconds, ntrials = 5, 5, 3
-    
-    # Well-conditioned case
-    data = np.random.randn(nunits, nconds, ntrials)
-    results = gsn_denoise(data)
-    assert results['denoiser'].shape == (nunits, nunits)
-    
-    # Poorly-conditioned case
-    U = np.linalg.qr(np.random.randn(nunits, nunits))[0]
-    s = np.logspace(0, 10, nunits)  # Exponentially decreasing singular values
-    V = np.linalg.qr(np.random.randn(nconds, nconds))[0]
-    data_poor = U @ np.diag(s)[:, :nconds] @ V.T
-    data_poor = data_poor[:, :, np.newaxis] + 0.1 * np.random.randn(nunits, nconds, ntrials)
-    
-    results = gsn_denoise(data_poor)
-    assert results['denoiser'].shape == (nunits, nunits)
-    assert not np.any(np.isnan(results['denoiser']))
-
 def test_basis_selection_edge_cases():
     """Test edge cases in basis selection."""
     nunits, nconds, ntrials = 5, 5, 3

@@ -440,8 +440,18 @@ def test_magnitude_fractions(data_shape, mag_frac):
         # Should retain all dimensions
         assert results['dimsretained'] == results['fullbasis'].shape[1]
     elif mag_frac == 1.0:
-        # Should retain at most one dimension
-        assert results['dimsretained'] <= 1
+        # When mag_frac=1.0, threshold = 1.0 * max(|magnitudes|)
+        # If all magnitudes are equal (especially zero), all dimensions may survive
+        max_mag = np.max(np.abs(results['mags']))
+        if max_mag == 0:
+            # All magnitudes are zero, so threshold is 0 and all dimensions survive
+            assert results['dimsretained'] == results['fullbasis'].shape[1]
+        else:
+            # Should retain only dimensions with magnitude equal to maximum
+            threshold = max_mag
+            n_at_max = np.sum(np.abs(results['mags']) >= threshold)
+            assert results['dimsretained'] <= n_at_max
+        
         if results['dimsretained'] == 0:
             assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
             assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
@@ -473,8 +483,18 @@ def test_magnitude_fractions(data_shape, mag_frac):
         # Should retain all dimensions
         assert results['dimsretained'] == results['fullbasis'].shape[1]
     elif mag_frac == 1.0:
-        # Should retain at most one dimension
-        assert results['dimsretained'] <= 1
+        # When mag_frac=1.0, threshold = 1.0 * max(|magnitudes|)
+        # If all magnitudes are equal (especially zero), all dimensions may survive
+        max_mag = np.max(np.abs(results['mags']))
+        if max_mag == 0:
+            # All magnitudes are zero, so threshold is 0 and all dimensions survive
+            assert results['dimsretained'] == results['fullbasis'].shape[1]
+        else:
+            # Should retain only dimensions with magnitude equal to maximum
+            threshold = max_mag
+            n_at_max = np.sum(np.abs(results['mags']) >= threshold)
+            assert results['dimsretained'] <= n_at_max
+        
         if results['dimsretained'] == 0:
             assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
             assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
@@ -506,8 +526,18 @@ def test_magnitude_fractions(data_shape, mag_frac):
         # Should retain all dimensions
         assert results['dimsretained'] == results['fullbasis'].shape[1]
     elif mag_frac == 1.0:
-        # Should retain at most one dimension
-        assert results['dimsretained'] <= 1
+        # When mag_frac=1.0, threshold = 1.0 * max(|magnitudes|)
+        # If all magnitudes are equal (especially zero), all dimensions may survive
+        max_mag = np.max(np.abs(results['mags']))
+        if max_mag == 0:
+            # All magnitudes are zero, so threshold is 0 and all dimensions survive
+            assert results['dimsretained'] == results['fullbasis'].shape[1]
+        else:
+            # Should retain only dimensions with magnitude equal to maximum
+            threshold = max_mag
+            n_at_max = np.sum(np.abs(results['mags']) >= threshold)
+            assert results['dimsretained'] <= n_at_max
+        
         if results['dimsretained'] == 0:
             assert np.allclose(results['denoiser'], 0)  # Denoiser should be zero matrix
             assert np.allclose(results['denoiseddata'], 0)  # Denoised data should be zero matrix
