@@ -47,6 +47,7 @@ else
     d(d<0) = 0;
     c2 = v*d*v';
   end
+  c2 = (c2+c2')/2;  % ensure symmetric again
 
   % check that it is indeed PSD
   [T,err] = cholcov(c2);

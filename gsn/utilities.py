@@ -49,7 +49,7 @@ def nanreplace(m, val=0, mode=0):
     Replace NaN or non-finite values in a matrix with a specified value.
 
     Parameters:
-    m (numpy.ndarray): A matrix.
+    m (numpy.ndarray or scalar): A matrix or scalar.
     val (optional, scalar): The value to replace NaNs with. Default is 0.
     mode (optional, int):
         0 means replace all NaNs in m with val.
@@ -65,6 +65,10 @@ def nanreplace(m, val=0, mode=0):
     assert np.array_equal(nanreplace(np.array([1, np.nan]), 0), np.array([1, 0]))
     assert np.array_equal(nanreplace(np.array([np.nan, 2, 3]), 0, 1), np.array([0, 0, 0]))
     """
+    
+    # Check if m is a scalar, and if so, wrap it in a numpy array
+    if np.isscalar(m):
+        m = np.array([m])
 
     if mode == 0:
         m[np.isnan(m)] = val
@@ -115,7 +119,7 @@ def zerodiv(x, y, val=0, wantcaution=1):
                 warnings.warn('abs value of divisor is less than 1e-5. we are treating the divisor as 0.')
                 return np.full(x.shape, val)
             else:
-                return x / y[:, np.newaxis]
+                return x / y # direct division by scalar y
     else:
         bad = y == 0
         bad2 = abs(y) < 1e-5  # see allzero.m
@@ -138,3 +142,28 @@ def zerodiv(x, y, val=0, wantcaution=1):
                 f = x / tmp[:, np.newaxis]
             f[bad] = val
         return f
+    
+def deterministic_randperm(n, seed=42):
+    """
+    Create a deterministic random permutation that matches MATLAB's randperm exactly.
+    
+    MATLAB's randperm(n) algorithm:
+    1. Generate n random numbers using the specified seed
+    2. Return the indices that would sort these random numbers (argsort)
+    
+    This matches MATLAB's implementation exactly, unlike numpy's permutation 
+    which uses a different shuffling algorithm.
+    
+    Parameters:
+    n : int
+        The size of the permutation (0 to n-1)
+    seed : int, optional
+        Random seed for reproducibility. Default is 42.
+        
+    Returns:
+    numpy.ndarray
+        Array of indices from 0 to n-1 in permuted order, matching MATLAB's randperm
+    """
+    rng = np.random.RandomState(seed)  # Ensures compatibility with MATLAB's 'twister'
+    random_values = rng.random(n)      # Generate n random numbers
+    return np.argsort(random_values)   # Return indices that sort the random values

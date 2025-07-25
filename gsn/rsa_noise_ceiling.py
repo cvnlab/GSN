@@ -2,7 +2,7 @@ import numpy as np
 import scipy
 import itertools
 import warnings
-from gsn.utilities import nanreplace
+from gsn.utilities import nanreplace, deterministic_randperm
 from gsn.calc_cod import calc_cod
 from gsn.calc_shrunken_covariance import calc_shrunken_covariance
 from gsn.construct_nearest_psd_covariance import construct_nearest_psd_covariance
@@ -112,8 +112,13 @@ def rsa_noise_ceiling(data, opt = None):
                 distribution. Note that this is computed on the raw
                 estimated covariances. Also, note that we apply positive
                 rectification (to prevent non-sensical negative ncsnr values).
+        numiters - the number of iterations used in the biconvex optimization.
+                0 means the first estimate was already positive semi-definite.
 
     History:
+    - 2025/07/11 - add internal case of NaNs allowed for GSN
+    - 2024/09/11 - misc. bug fixes
+    - 2024/08/24 - add results['numiters']
     - 2024/01/05:
         (1) Major change to use the biconvex optimization procedure --
             we now have cSb and cNb as the final estimates;
@@ -133,6 +138,10 @@ def rsa_noise_ceiling(data, opt = None):
         1 means use no scaling.
         2 means scale to match the un-regularized average variance.
         Default: 0.
+
+    Internal notes:
+    - We allow GSN to support input data with NaN!! (see perform_gsn.py)
+      - Note that this is allowed ONLY when opt['mode'] is not 0
     """
 
     # Initialize opt as an empty dictionary if it is None
@@ -166,6 +175,13 @@ def rsa_noise_ceiling(data, opt = None):
     assert np.all(opt['scs'] >= 0), "All elements in 'scs' should be non-negative."
     assert opt['simchunk'] >= 2, "simchunk must be 2 or greater."
 
+    # check whether we are in the special case of uneven trials across conditions
+    isuneven = np.any(np.isnan(data))
+    if isuneven:  # if it seems like it is, let's do some stringent sanity checks
+        validcnt = np.sum(~np.any(np.isnan(data), axis=0), axis=1)  # 1 x conditions with number of trials with no NaNs
+        assert np.all(validcnt >= 1), 'all conditions must have at least 1 valid trial (no NaNs)'
+        assert opt['mode'] != 0, 'we are NOT compatible with the RSA mode'
+
     # ESTIMATION OF COVARIANCES
 
     # estimate noise covariance
@@ -179,6 +195,34 @@ def rsa_noise_ceiling(data, opt = None):
     # estimate data covariance
     if opt['wantverbose']:
         print('Estimating data covariance...', end='')
+    if isuneven:
+
+        # this is a tricky case. we use the maximum number of trials such
+        # that all conditions have at least that many valid trials.
+        # we randomly pull from the available valid trials to meet that
+        # constraint. we mangle data to become this new subset.
+        # we also change ntrial to reflect this new "faked" data subset.
+        ntrial = int(np.min(validcnt))  # number of trials that we will enforce
+        newdata = np.empty((data.shape[0], data.shape[1], ntrial), dtype=data.dtype)
+        for p in range(data.shape[1]):
+            validix = ~np.any(np.isnan(data[:, p, :]), axis=0)  # 1 x trials indicating where valid data is present
+            temp = data[:, p, validix]  # voxels x validtrials
+            ix = deterministic_randperm(temp.shape[1])
+            newdata[:, p, :] = temp[:, ix[:ntrial]]  # note that trial order may be shuffled! (no big deal)
+        data = newdata
+        del newdata
+
+        # now, data has been mangled/truncated!!! beware!
+        
+        # figure out ntrial to use in biconvex optimization (on average, how many trials were there?)
+        ntrialBC = np.sum(validcnt[validcnt > 1]) / ncond
+        if ntrialBC < 1:
+            warnings.warn('ntrialBC is lopsided! setting to 1')
+            ntrialBC = 1
+
+    else:
+        ntrialBC = ntrial  # in the standard case, ntrial in biconvex optimization is just ntrial
+    
     mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(np.mean(data, axis=2).T,
                                                          5, opt['shrinklevels'], 1)
     if opt['wantverbose']:
@@ -195,7 +239,7 @@ def rsa_noise_ceiling(data, opt = None):
     # prepare some outputs
     sd_noise = np.sqrt(np.maximum(np.diag(cN), 0))   # std of the noise (1 x voxels)
     sd_signal = np.sqrt(np.maximum(np.diag(cS), 0))  # std of the signal (1 x voxels)
-    ncsnr = sd_signal / sd_noise                     # noise ceiling SNR (1 x voxels)
+    ncsnr = np.divide(sd_signal, sd_noise, out=np.zeros_like(sd_signal), where=sd_noise!=0)
 
     # BICONVEX OPTIMIZATION
     if opt['wantverbose']:
@@ -205,6 +249,7 @@ def rsa_noise_ceiling(data, opt = None):
     cNb = cN
     cSb_old = cS
     cNb_old = cN
+    numiters = 0  # numiters == 0 means the first estimate was already PSD
 
     while True:
         # calculate new estimate of cSb
@@ -212,19 +257,24 @@ def rsa_noise_ceiling(data, opt = None):
         cSb, _ = construct_nearest_psd_covariance(temp)
 
         # calculate new estimate of cNb
-        temp = (ncond * (ntrial - 1) * ntrial**2) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * cN \
-               + (ncond - 1) / (ncond * ntrial**2 * (ntrial - 1) + ncond - 1) * ntrial * (cD - cSb)
+        temp = (ncond * (ntrialBC - 1) * ntrialBC**2) / (ncond * ntrialBC**2 * (ntrialBC - 1) + ncond - 1) * cN \
+               + (ncond - 1) / (ncond * ntrialBC**2 * (ntrialBC - 1) + ncond - 1) * ntrialBC * (cD - cSb)
         cNb, _ = construct_nearest_psd_covariance(temp)
 
         # check deltas
-        cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
-        cNcheck = np.corrcoef(cNb_old.flatten(), cNb.flatten())[0, 1]
+        if cSb.shape[0] == 1:  # handle special case of only one unit
+            if abs(cSb_old - cSb) < 1e-5 and abs(cNb_old - cNb) < 1e-5:
+                break
+        else:
+            cScheck = np.corrcoef(cSb_old.flatten(), cSb.flatten())[0, 1]
+            cNcheck = np.corrcoef(cNb_old.flatten(), cNb.flatten())[0, 1]
 
-        # convergence?
-        if cScheck > 0.999 and cNcheck > 0.999:
-            break
+            # convergence?
+            if cScheck > 0.999 and cNcheck > 0.999:
+                break
 
         # update
+        numiters += 1
         cSb_old = cSb
         cNb_old = cNb
 
@@ -268,7 +318,7 @@ def rsa_noise_ceiling(data, opt = None):
                 break
 
             # calculate the full set of possibilities
-            combolist[nn] = list(itertools.combinations(range(ntrial), splitnums[nn]))
+            combolist[nn] = list(itertools.combinations(range(ntrial), int(splitnums[nn])))
             ncomb = len(combolist[nn])
 
             # figure out pairs of splits that are mutually exclusive
@@ -289,7 +339,7 @@ def rsa_noise_ceiling(data, opt = None):
         if doexhaustive:
             if opt['wantverbose']:
                 print('doing exhaustive set of combinations...', end='')
-            datasplitr = np.zeros(len(splitnums))
+            datasplitr = np.zeros((len(splitnums),1))
             for nn in range(len(splitnums)):
                 ncomb = len(combolist[nn])
                 temp = []
@@ -309,7 +359,7 @@ def rsa_noise_ceiling(data, opt = None):
             while True:
                 for nn in range(len(splitnums)):
                     for si in range(iicur, iimax):
-                        temp = np.random.permutation(ntrial)
+                        temp = deterministic_randperm(ntrial)
                         datasplitr[nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](np.mean(data[:, :, temp[:splitnums[nn]]], axis=2)),
                                                                         opt['rdmfun'](np.mean(data[:, :, temp[splitnums[nn]:splitnums[nn] * 2]], axis=2))))
                 robustness = np.mean(np.abs(np.median(datasplitr, axis=1)) / (np.iqr(datasplitr, axis=1) / 2 / np.sqrt(datasplitr.shape[1])))
@@ -343,8 +393,8 @@ def rsa_noise_ceiling(data, opt = None):
             for sci in range(len(opt['scs'])):
                 for nn in range(len(splitnums)):
                     for si in range(iicur, iimax):
-                        signal = np.random.multivariate_normal(mnS, tempcS[:, :, sci], opt['ncconds'])  # cond x voxels
-                        noise = np.random.multivariate_normal(mnN, cNb / splitnums[nn], opt['ncconds'] * 2)  # 2*cond x voxels
+                        signal = np.random.multivariate_normal(mnS.squeeze(), tempcS[:, :, sci], opt['ncconds'])  # cond x voxels
+                        noise = np.random.multivariate_normal(mnN.squeeze(), cNb / splitnums[nn], opt['ncconds'] * 2)  # 2*cond x voxels
                         measurement1 = signal + noise[:opt['ncconds'], :]  # cond x voxels
                         measurement2 = signal + noise[opt['ncconds']:, :]  # cond x voxels
                         modelsplitr[sci, nn, si] = nanreplace(opt['comparefun'](opt['rdmfun'](measurement1.T),
@@ -369,7 +419,7 @@ def rsa_noise_ceiling(data, opt = None):
         if opt['wantverbose']:
             print('Finding best model...', end='')
         # Assuming calccod is a function that calculates coefficient of determination
-        R2s = calc_cod(np.median(modelsplitr, axis=2), np.tile(np.median(datasplitr, axis=1), (len(opt['scs']), 1)), 2, None, 0)
+        R2s = calc_cod(np.median(modelsplitr, axis=2), np.tile(np.median(datasplitr, axis=1), (len(opt['scs']), 1)), 1, None, 0)
         bestii = np.argmax(R2s)
         sc = opt['scs'][bestii]
         if opt['wantverbose']:
@@ -379,35 +429,40 @@ def rsa_noise_ceiling(data, opt = None):
         cSb_rsa, _ = construct_nearest_psd_covariance(cSb * sc)
 
         # Warn if data split r is higher than all of the model split r
-        temp = np.median(modelsplitr[:, -1, :], axis=2)
+        temp = np.median(modelsplitr[:, -1, :], axis=1)
         if splitr > np.max(temp):
             warnings.warn('The empirical data split r seems to be out of the range of the model. '
                         'Something may be wrong; results may be inaccurate. Consider increasing the <scs> input.')
 
         # Sanity check on the smoothness of the R2 results
         if len(R2s) >= 4:
-            smoothed_R2s = np.convolve.convolve(R2s, [1/3, 1/3, 1/3], mode='valid')
+            smoothed_R2s = np.convolve(R2s, [1/3, 1/3, 1/3], mode='valid')
             temp_R2 = calc_cod(smoothed_R2s, R2s[1:-1])  # Assuming calccod is implemented
             if temp_R2 < 90:
                 warnings.warn(f'The R2 values appear to be non-smooth (smooth function explains only {temp_R2:.1f}% variance). '
                             'Something may be wrong; results may be inaccurate. Consider increasing simchunk, simthresh, and/or maxsimnum.')
 
     # Performing Monte Carlo simulations for RSA noise ceiling
+    if opt['ncsims'] > 0:
+        if opt['wantverbose']:
+            print('Performing Monte Carlo simulations...', end='')
+        ncdist = np.zeros(opt['ncsims'])
+        for rr in range(opt['ncsims']):
+            signal = np.random.multivariate_normal(mnS.squeeze(), cSb_rsa, opt['ncconds'])
+            noise = np.random.multivariate_normal(mnN.squeeze(), cNb / opt['nctrials'], opt['ncconds'])
+            measurement = signal + noise
+            result = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
+            ncdist[rr] = result.item() if hasattr(result, 'item') else result
+        
+        # Compute median across simulations
+        nc = np.median(ncdist)
+    else:
+        # No simulations requested
+        ncdist = np.array([])
+        nc = np.nan
+        
     if opt['wantverbose']:
-        print('Performing Monte Carlo simulations...', end='')
-    ncdist = np.zeros(opt['ncsims'])
-    for rr in range(opt['ncsims']):
-        signal = np.random.multivariate_normal(mnS, cSb_rsa, opt['ncconds'])
-        noise = np.random.multivariate_normal(mnN, cNb / opt['nctrials'], opt['ncconds'])
-        measurement = signal + noise
-        ncdist[rr] = nanreplace(opt['comparefun'](opt['rdmfun'](signal.T), opt['rdmfun'](measurement.T)))
-
-    if opt['wantverbose']:
-        print('done.')
-
-    # Finish up
-    # Compute median across simulations
-    nc = np.median(ncdist)
+            print('done.')
 
     # Prepare additional outputs
     results = {
@@ -421,7 +476,8 @@ def rsa_noise_ceiling(data, opt = None):
         'cSb': cSb,
         'sc': sc,
         'splitr': splitr,
-        'ncsnr': ncsnr
+        'ncsnr': ncsnr,
+        'numiters': numiters
     }
 
     # MAKE A FIGURE
@@ -429,81 +485,82 @@ def rsa_noise_ceiling(data, opt = None):
         if opt['wantverbose']:
             print('Creating figure...')
 
-        plt.figure(figsize=(10, 10))  # Adjusted size for Python
+        fig = plt.figure(figsize=(26, 20))  # Adjusted size for Python
+        gs = fig.add_gridspec(4, 6)
 
         # Mean of Signal
-        plt.subplot(4, 6, (1, 2))
-        plt.hist(mnS, bins=30)  # Assuming 30 bins for histogram
-        plt.ylabel('Frequency')
-        plt.title('Mean of Signal')
+        ax1 = fig.add_subplot(gs[0, 0:2])
+        ax1.hist(mnS, bins=30)  # Assuming 30 bins for histogram
+        ax1.set_ylabel('Frequency')
+        ax1.set_title('Mean of Signal')
 
         # Covariance of Signal (Raw)
-        plt.subplot(4, 6, (3, 4))
+        ax2 = fig.add_subplot(gs[0, 2:4])
         mx = np.max(np.abs(cS)) if np.max(np.abs(cS)) != 0 else 1
-        plt.imshow(cS, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
-        plt.colorbar()
-        plt.title('Covariance of Signal (Raw)')
+        im2 = ax2.imshow(cS, aspect='equal', cmap='viridis', norm=Normalize(vmin=-mx, vmax=mx))
+        fig.colorbar(im2, ax=ax2)
+        ax2.set_title('Covariance of Signal (Raw)')
 
         # Optimized and scaled
-        plt.subplot(4, 6, (5, 6))
+        ax3 = fig.add_subplot(gs[0, 4:6])
         mx = np.max(np.abs(cSb_rsa)) if np.max(np.abs(cSb_rsa)) != 0 else 1
-        plt.imshow(cSb_rsa, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
-        plt.colorbar()
-        plt.title('Optimized and scaled')
+        im3 = ax3.imshow(cSb_rsa, aspect='equal', cmap='viridis', norm=Normalize(vmin=-mx, vmax=mx))
+        fig.colorbar(im3, ax=ax3)
+        ax3.set_title('Optimized and scaled')
 
         # Mean of Noise
-        plt.subplot(4, 6, (7, 8))
-        plt.hist(mnN, bins=30)  # Assuming 30 bins for histogram
-        plt.ylabel('Frequency')
-        plt.title('Mean of Noise')
+        ax4 = fig.add_subplot(gs[1, 0:2])
+        ax4.hist(mnN, bins=30)  # Assuming 30 bins for histogram
+        ax4.set_ylabel('Frequency')
+        ax4.set_title('Mean of Noise')
 
         # Covariance of Noise (Optimized)
-        plt.subplot(4, 6, (9, 10))
+        ax5 = fig.add_subplot(gs[1, 2:4])
         mx = np.max(np.abs(cNb)) if np.max(np.abs(cNb)) != 0 else 1
-        plt.imshow(cNb, vmin=-mx, vmax=mx, aspect='equal', cmap='viridis', norm=Normalize())
-        plt.colorbar()
-        plt.title('Covariance of Noise (Optimized)')
+        im5 = ax5.imshow(cNb, aspect='equal', cmap='viridis', norm=Normalize(vmin=-mx, vmax=mx))
+        fig.colorbar(im5, ax=ax5)
+        ax5.set_title('Covariance of Noise (Optimized)')
 
         # Noise ceiling SNR
-        plt.subplot(4, 6, (11, 12))
-        plt.hist(ncsnr, bins=30)  # Assuming 30 bins for histogram
-        plt.ylabel('Frequency')
-        plt.title('Noise ceiling SNR')
+        ax6 = fig.add_subplot(gs[1, 4:6])
+        ax6.hist(ncsnr, bins=30)  # Assuming 30 bins for histogram
+        ax6.set_ylabel('Frequency')
+        ax6.set_title('Noise ceiling SNR')
 
-        # Model and Data Similarity
-        plt.subplot(4, 6, (13, 14, 15, 19, 20, 21))
+        # Model and Data Similarity (spanning multiple cells)
+        ax7 = fig.add_subplot(gs[2:4, 1:4])  # Spans rows 2-4 and columns 1-4
         cmap0 = get_cmap('viridis')(np.linspace(0, 1, len(opt['scs'])))
         for sci in range(len(opt['scs'])):
-            md0 = np.median(modelsplitr[sci, :, :], axis=2)
-            se0 = scipy.stats.iqr(modelsplitr[sci, :, :], axis=2) / 2 / np.sqrt(modelsplitr.shape[2])
-            plt.errorbar(splitnums, md0, yerr=se0, fmt='o-', color=cmap0[sci], linewidth=1)
+            md0 = np.median(modelsplitr[sci, :, :], axis=1)
+            se0 = scipy.stats.iqr(modelsplitr[sci, :, :], axis=1) / 2 / np.sqrt(modelsplitr.shape[2])
+            ax7.errorbar(splitnums, md0, yerr=se0, fmt='o-', color=cmap0[sci], linewidth=1)
 
             lw0 = 3 if opt['scs'][sci] == sc else 1
             mark0 = 'o' if opt['scs'][sci] == sc else 'x'
-            plt.plot(splitnums, md0, 'r' + mark0 + '-', color=cmap0[sci], linewidth=lw0)
+            ax7.plot(splitnums, md0, 'r' + mark0 + '-', linewidth=lw0)
 
         md0 = np.median(datasplitr, axis=1)
         sd0 = scipy.stats.iqr(datasplitr, axis=1) / 2
         se0 = sd0 / np.sqrt(datasplitr.shape[1])
-        plt.errorbar(splitnums, md0, yerr=sd0, fmt='k-', linewidth=1)
-        plt.errorbar(splitnums, md0, yerr=se0, fmt='k-', linewidth=3)
-        plt.plot(splitnums, md0, 'kd-', linewidth=3)
-        plt.xlim([np.min(splitnums) - 1, np.max(splitnums) + 1])
-        plt.xlabel('Number of trials in each split')
-        plt.ylabel('Similarity (comparefun output)')
-
+        ax7.errorbar(splitnums, md0, yerr=sd0, fmt='k-', linewidth=1)
+        ax7.errorbar(splitnums, md0, yerr=se0, fmt='k-', linewidth=3)
+        ax7.plot(splitnums, md0, 'kd-', linewidth=3)
+        ax7.set_xlim([np.min(splitnums) - 1, np.max(splitnums) + 1])
+        ax7.set_xlabel('Number of trials in each split')
+        ax7.set_ylabel('Similarity (comparefun output)')
+        
         if doexhaustive:
-            plt.title(f'Data (ALL sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr:.3f}')
+            ax7.set_title(f"Data (ALL sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr[0]:.3f}")
         else:
-            plt.title(f'Data ({datasplitr.shape[1]} sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr:.3f}')
-
-        # Scaling factor and R2
-        plt.subplot(4, 6, (16, 17, 18, 22, 23, 24))
-        plt.plot(opt['scs'], R2s, 'ro-')
-        plt.axvline(x=sc, color='k', linestyle='-', linewidth=3)
-        plt.xlabel('Scaling factor')
-        plt.ylabel('R^2 between model and data (%)')
-        plt.title(f'sc={sc:.2f}, nc={nc:.3f} +/- {scipy.stats.iqr(ncdist)/2/np.sqrt(len(ncdist)):.3f}')
+            ax7.set_title(f"Data ({datasplitr.shape[1]} sims); Model ({modelsplitr.shape[2]} sims); splitr={splitr[0]:.3f}")
+  
+        # Scaling factor and R2 (spanning multiple cells)
+        ax8 = fig.add_subplot(gs[2:4, 4:6])  # Spans rows 2-4 and columns 4-6
+        ax8.plot(opt['scs'], R2s, 'ro-')
+        ax8.axvline(x=sc, color='k', linestyle='-', linewidth=3)
+        ax8.set_xlabel('Scaling factor')
+        ax8.set_ylabel('R^2 between model and data (%)')
+        ax8.set_title(f'sc={sc:.2f}, nc={nc:.3f} +/- {scipy.stats.iqr(ncdist)/2/np.sqrt(len(ncdist)):.3f}')
 
         # Saving the figure
         if opt['wantfig'] != 1:
