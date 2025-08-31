@@ -8,7 +8,7 @@ GSN is a toolbox for accurately modeling signal and noise distributions in neura
 
 GSN is detailed in the following paper:
 
-**[Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).](https://www.biorxiv.org/content/10.1101/2024.04.22.590510v1)**
+**[Kay, K., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schütt, H.H. Disentangling signal and noise in neural responses through generative modeling. *PLOS Computational Biology* (2025).](https://doi.org/10.1371/journal.pcbi.1012092)**
 
 If you have questions or discussion points, please use the Discussions
 feature of this GitHub repository. If you find a bug, 
@@ -66,10 +66,11 @@ Terms of use: This content is licensed under a BSD 3-Clause License.
 
 If you use GSN in your research, please cite the following paper:
 
-* **[Kay, K.N., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schutt, H. Disentangling signal and noise in neural responses through generative modeling. *bioRxiv* (2024).](https://www.biorxiv.org/content/10.1101/2024.04.22.590510v1)**
+* **[Kay, K., Prince, J.S., Gebhart, T., Tuckute, G., Zhou, J., Naselaris, T., Schütt, H.H. Disentangling signal and noise in neural responses through generative modeling. *PLOS Computational Biology* (2025).](https://doi.org/10.1371/journal.pcbi.1012092)**
 
 ## Change history
 
+* 2025/08/31 - Version 1.1 of GSN released. Accompanies the PLOS Computational Biology paper.
 * 2024/04/28 - Version 1.0 of GSN released. Accompanies the bioRxiv preprint.
 
 [pre-release updates; early-stage testing]
