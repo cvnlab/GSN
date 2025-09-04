@@ -106,16 +106,11 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
           0 means use signal variance computed from the data
           1 means use eigenvalues (<V> must be 0, 1, 2, or 3)
           Default: 0.
-        <mag_frac> - scalar. Indicates a fraction of the maximum magnitude
-          component. Matters only when <cv_mode> is -1.
-          Default: 0.01.
-        <mag_selection_mode> - scalar. Indicates how to select dimensions. Matters only 
-          when <cv_mode> is -1.
-          0 means use the smallest number of dimensions that all survive threshold.
-            In this case, the dimensions returned are all contiguous from the left.
-          1 means use all dimensions that survive the threshold.
-            In this case, the dimensions returned are not necessarily contiguous.
-          Default: 0.
+        <mag_frac> - scalar. Indicates the fraction of total variance to retain.
+          Matters only when <cv_mode> is -1. The algorithm will sort dimensions
+          by magnitude and select the top dimensions that cumulatively account
+          for this fraction of the total variance.
+          Default: 0.95.
         <denoisingtype> - scalar. Indicates denoising type:
           0 means denoising in the trial-averaged sense
           1 means single-trial-oriented denoising
@@ -190,8 +185,8 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
         # Using magnitude thresholding
         opt = {
             'cv_mode': -1,  # Use magnitude thresholding
-            'mag_frac': 0.1,  # Keep components > 10% of max
-            'mag_selection_mode': 0  # Use contiguous dimensions
+            'mag_frac': 0.95,  # Keep components that account for 95% of variance
+            'mag_type': 0  # Use signal variance
         }
         results = gsn_denoise(data, 0, opt)
 
@@ -282,8 +277,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
     opt.setdefault('cv_mode', 0)
     opt.setdefault('cv_threshold_per', 'unit')
     opt.setdefault('mag_type', 0)
-    opt.setdefault('mag_frac', 0.01)
-    opt.setdefault('mag_selection_mode', 0)
+    opt.setdefault('mag_frac', 0.95)
     opt.setdefault('denoisingtype', 0)  # Default to trial-averaged denoising
     
     # compute the unit means since they are removed during denoising and will be added back
@@ -633,22 +627,17 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     Select dimensions using magnitude thresholding.
 
     Implements the magnitude thresholding procedure for GSN denoising.
-    Selects dimensions based on their magnitudes (eigenvalues or variances)
-    rather than using cross-validation.
-
-    Supports two modes:
-    - Contiguous selection of the left-most group of dimensions above threshold
-    - Selection of any dimension above threshold
+    Selects dimensions based on cumulative variance explained rather than 
+    using cross-validation.
 
     Algorithm Details:
     1. Get magnitudes either:
        - From signal variance of the data projected into the basis (mag_type=0)
        - Or precomputed basis eigenvalues (mag_type=1)
-    2. Set threshold as fraction of maximum magnitude
-    3. Select dimensions either:
-       - Contiguously from strongest dimension
-       - Or any dimension above threshold
-    4. Create denoising matrix using selected dimensions
+    2. Sort dimensions by magnitude in descending order
+    3. Select the top dimensions that cumulatively account for mag_frac 
+       of the total variance
+    4. Create denoising matrix using selected dimensions (in original order)
 
     Parameters:
     -----------
@@ -658,10 +647,7 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
         <mag_type> - scalar. How to obtain component magnitudes:
             0: use signal variance computed from data
             1: use pre-computed eigenvalues from results
-        <mag_frac> - scalar. Fraction of maximum magnitude to use as threshold.
-        <mag_selection_mode> - scalar. How to select dimensions:
-            0: contiguous from strongest dimension
-            1: any dimension above threshold
+        <mag_frac> - scalar. Fraction of total variance to retain (e.g., 0.95).
         <denoisingtype> - scalar. Type of denoising:
             0: trial-averaged
             1: single-trial
@@ -671,7 +657,7 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     --------
     <denoiser> - shape (nunits, nunits). Matrix that projects data onto denoised space.
     <cv_scores> - shape (0, 0). Empty array (not used in magnitude thresholding).
-    <best_threshold> - shape (1, n_retained). Selected dimensions.
+    <best_threshold> - shape (1, n_retained). Selected dimension indices.
     <denoiseddata> - shape (nunits, nconds) or (nunits, nconds, ntrials). Denoised neural responses.
     <basis> - shape (nunits, dims). Complete basis used for denoising.
     <signalsubspace> - shape (nunits, n_retained). Final basis functions used for denoising.
@@ -683,7 +669,6 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
     nunits, nconds, ntrials = data.shape
     mag_type = opt['mag_type']
     mag_frac = opt['mag_frac']
-    mag_selection_mode = opt['mag_selection_mode']
     denoisingtype = opt['denoisingtype']
 
     cv_scores = np.array([])  # Not used in magnitude thresholding
@@ -711,41 +696,31 @@ def perform_magnitude_thresholding(data, basis, opt, results=None):
 
         magnitudes = np.array(sigvars)
     
-    # Determine threshold as fraction of maximum magnitude
-    threshold_val = mag_frac * np.max(np.abs(magnitudes))
-    surviving = np.abs(magnitudes) >= threshold_val
+    # Sort dimensions by magnitude in descending order to find cumulative variance
+    sorted_indices = np.argsort(magnitudes)[::-1]  # Descending order
+    sorted_magnitudes = magnitudes[sorted_indices]
     
-    # Find dimensions to retain based on mag_selection_mode
-    surv_idx = np.where(surviving)[0]
+    # Calculate cumulative variance explained
+    total_variance = np.sum(sorted_magnitudes)
+    cumulative_variance = np.cumsum(sorted_magnitudes)
+    cumulative_fraction = cumulative_variance / total_variance
     
-    if len(surv_idx) == 0:
-        # If no dimensions survive, return zero matrices
+    # Find how many dimensions we need to reach mag_frac of total variance
+    dims_needed = np.sum(cumulative_fraction < mag_frac) + 1  # +1 to include the dimension that crosses threshold
+    dims_needed = min(dims_needed, len(sorted_magnitudes))  # Don't exceed total dimensions
+    
+    # Get the original indices of the selected dimensions (unsorted)
+    best_threshold = sorted_indices[:dims_needed]
+    dimsretained = len(best_threshold)
+    
+    if dimsretained == 0:
+        # If no dimensions selected, return zero matrices
         denoiser = np.zeros((nunits, nunits))
         denoiseddata = np.zeros((nunits, nconds)) if denoisingtype == 0 else np.zeros_like(data)
         signalsubspace = basis[:, :0]  # Empty but valid shape
         dimreduce = np.zeros((0, nconds)) if denoisingtype == 0 else np.zeros((0, nconds, ntrials))
-        dimsretained = 0
         best_threshold = np.array([])
         return denoiser, cv_scores, best_threshold, denoiseddata, basis, signalsubspace, dimreduce, magnitudes, dimsretained
-
-    if mag_selection_mode == 0:  # Contiguous from left
-        # For contiguous from left, we want the leftmost block
-        if len(surv_idx) == 1:
-            dimsretained = 1
-            best_threshold = surv_idx
-        else:
-            # Take all dimensions up to the first gap
-            gaps = np.where(np.diff(surv_idx) > 1)[0]
-            if len(gaps) > 0:
-                dimsretained = gaps[0] + 1
-                best_threshold = surv_idx[:dimsretained]
-            else:
-                # No gaps, take all surviving dimensions
-                dimsretained = len(surv_idx)
-                best_threshold = surv_idx
-    else:  # Keep all dimensions above threshold
-        dimsretained = len(surv_idx)
-        best_threshold = surv_idx
 
     # Create denoising matrix using retained dimensions
     denoising_fn = np.zeros(basis.shape[1])
@@ -960,12 +935,11 @@ def plot_diagnostic_figures(data, results, test_data=None):
     cv_mode = results.get('opt', {}).get('cv_mode', 0)
     if cv_mode == -1:
         mag_type = results.get('opt', {}).get('mag_type', 0)
-        mag_selection_mode = results.get('opt', {}).get('mag_selection_mode', 0)
-        mag_frac = results.get('opt', {}).get('mag_frac', 0.01)
+        mag_frac = results.get('opt', {}).get('mag_frac', 0.95)
         mag_frac_str = f"{mag_frac:.3f}".rstrip('0').rstrip('.')
         title_text = (f"Data shape: {nunits} units × {nconds} conditions × {ntrials} trials    |    "
                      f"V = {V_desc}    |    cv_mode = {cv_mode}    |    "
-                     f"mag_type = {mag_type}, mag_mode = {mag_selection_mode}, mag_frac = {mag_frac_str}\n")
+                     f"mag_type = {mag_type}, mag_frac = {mag_frac_str}\n")
     else:
         threshold_per = results.get('opt', {}).get('cv_threshold_per', 'unit')
         title_text = (f"Data shape: {nunits} units × {nconds} conditions × {ntrials} trials    |    "
@@ -1079,7 +1053,6 @@ def plot_diagnostic_figures(data, results, test_data=None):
         # Calculate and plot threshold indicators based on mode
         cv_mode = results.get('opt', {}).get('cv_mode', 0)
         cv_threshold_per = results.get('opt', {}).get('cv_threshold_per', 'unit')
-        mag_selection_mode = results.get('opt', {}).get('mag_selection_mode', 0)
         mag_type = results.get('opt', {}).get('mag_type', 0)
         
         if cv_mode >= 0:  # Cross-validation mode
@@ -1101,19 +1074,16 @@ def plot_diagnostic_figures(data, results, test_data=None):
                     for thresh in unique_thresholds:
                         ax3.plot(thresh, ylim[1], 'r*', markersize=5,
                                label="")
-        else:  # Magnitude thresholding mode
-            if mag_selection_mode == 0:  # Contiguous
-                if isinstance(best_threshold, (np.ndarray, list)):
-                    threshold_len = len(best_threshold)
-                else:
-                    threshold_len = best_threshold
-                ax3.axvline(x=float(threshold_len), color='r', linestyle='--', linewidth=1,
-                          label=f'Mag threshold: {threshold_len} dims')
-            # Add circles for included dimensions only if mag_type=1
-            if isinstance(best_threshold, (np.ndarray, list)) and mag_type == 1 and len(best_threshold) > 0:
+        else:  # Magnitude thresholding mode - show included dimensions
+            if isinstance(best_threshold, (np.ndarray, list)) and len(best_threshold) > 0:
+                # Add circles for included dimensions 
                 best_threshold_array = np.asarray(best_threshold, dtype=int)
                 ax3.plot(best_threshold_array, S[best_threshold_array], 'ro', markersize=4,
-                        label='Included dimensions' if mag_selection_mode == 1 else "")
+                        label='Included dimensions')
+                # Show vertical line for number of dimensions retained
+                threshold_len = len(best_threshold)
+                ax3.axvline(x=float(threshold_len), color='r', linestyle='--', linewidth=1,
+                          label=f'Dims retained: {threshold_len}')
         
         ax3.set_xlabel('Dimension')
         ax3.set_ylabel('Eigenvalue')
@@ -1143,11 +1113,11 @@ def plot_diagnostic_figures(data, results, test_data=None):
                 threshold_len = len(best_threshold)
                 ax4.axvline(x=float(threshold_len), color='r', linestyle='--', linewidth=1,
                            label=f'Dims retained: {threshold_len}')
-                # Add circles for included dimensions if mag_type=0
+                # Add circles for included dimensions
                 if mag_type == 0 and len(best_threshold) > 0:
                     best_threshold_array = np.asarray(best_threshold, dtype=int)
                     ax4.plot(best_threshold_array, sigvars[best_threshold_array], 'ro', markersize=4,
-                            label='Included dimensions' if mag_selection_mode == 1 else "")
+                            label='Included dimensions')
             else:
                 # Ensure scalar value for axvline
                 ax4.axvline(x=float(best_threshold), color='r', linestyle='--', linewidth=1,
@@ -1170,18 +1140,12 @@ def plot_diagnostic_figures(data, results, test_data=None):
         ax4.grid(True, alpha=0.3, which='both', axis='both')  # Enable grid for both axes
         ax4_twin.grid(False)  # Disable grid for twin axis to avoid double grid lines
 
-        # Plot 5: Cross-validation results (first subplot in middle row)
+       # Plot 5: Cross-validation results (first subplot in middle row)
         ax5 = fig.add_subplot(gs[1, 0])
         if 'cv_scores' in results and results.get('opt', {}).get('cv_mode', 0) > -1:
-            cv_data = stats.zscore(results['cv_scores'].mean(1),axis=0,ddof=1)
-            vmin, vmax = np.percentile(cv_data, [1, 99])
-            plt.imshow(cv_data.T, aspect='auto', interpolation='none', clim=(vmin, vmax))
-            plt.colorbar()
-            plt.xlabel('PC exclusion threshold')
-            plt.ylabel('Units')
-            plt.title('Cross-validation scores (z)')
+            #cv_data = stats.zscore(results['cv_scores'].mean(1),axis=1,ddof=1)
+            cv_data = results['cv_scores'].mean(1)#,axis=0,ddof=1)
             
-            # Show fewer ticks by increasing step size
             # Get thresholds, handling both list and array types
             cv_thresholds = opt.get('cv_thresholds', np.arange(results['cv_scores'].shape[0]))
             if isinstance(cv_thresholds, list):
@@ -1189,17 +1153,55 @@ def plot_diagnostic_figures(data, results, test_data=None):
             else:
                 thresholds = cv_thresholds
             
+            # Truncate thresholds that exceed data dimensionality
+            max_dim = results['cv_scores'].shape[0]
+            valid_mask = thresholds < max_dim
+            thresholds = thresholds[valid_mask]
+            cv_data = cv_data[valid_mask]
+            
+            cv_data = stats.zscore(cv_data,axis=0,ddof=1)
+            vmin, vmax = np.percentile(cv_data, [1, 99])
+            
+            # Set proper extent for imshow - ensure no white columns
+            extent = [0, len(thresholds), nunits, 0]
+            
+            im5 = ax5.imshow(cv_data.T, aspect='auto', interpolation='none', 
+                    clim=(vmin, vmax), extent=extent)
+            plt.colorbar(im5, ax=ax5)
+            ax5.set_xlabel('PC exclusion threshold')
+            ax5.set_ylabel('Units')
+            ax5.set_title('Cross-validation scores (z)')
+            
+            # Set x-ticks to show actual threshold values
             step = max(len(thresholds) // 10, 1)  # Show ~10 ticks or less
-            plt.xticks(np.arange(len(thresholds))[::step], thresholds[::step])
+            tick_positions = np.arange(0, len(thresholds), step) + 0.5  # Center of bins
+            tick_labels = thresholds[::step]
+            ax5.set_xticks(tick_positions)
+            ax5.set_xticklabels(tick_labels)
+            ax5.tick_params(axis='x', rotation=90)
             
             if results.get('opt', {}).get('cv_threshold_per') == 'unit':
-                if isinstance(best_threshold, np.ndarray):
-                    plt.plot(best_threshold-1, np.arange(nunits), 'r.', markersize=4,
-                            label='Unit-specific thresholds')
-            else:
-                plt.text(0.5, 0.5, 'No Cross-validation\nScores Available',
-                        ha='center', va='center', transform=ax5.transAxes)
-                plt.title('Cross-validation scores')
+                if isinstance(best_threshold, np.ndarray) and len(best_threshold) == nunits:
+                    # For each unit, find the threshold index that gives maximum CV score
+                    unit_indices = np.arange(nunits) + 0.5  # Center dots in cells
+                    threshold_positions = []
+                    
+                    # Find the position of maximum CV score for each unit
+                    for unit_idx in range(nunits):
+                        # Get CV scores for this unit across all thresholds
+                        unit_cv_scores = cv_data[:, unit_idx]  # cv_data shape: (n_thresholds, n_units)
+                        
+                        # Find threshold index with maximum score
+                        max_thresh_idx = np.argmax(unit_cv_scores)
+                        
+                        # Position at center of that threshold's cell
+                        threshold_positions.append(max_thresh_idx + 0.5)
+                    
+                    ax5.plot(threshold_positions, unit_indices, 'r.', markersize=4)
+        else:
+            ax5.text(0.5, 0.5, 'No Cross-validation\nScores Available',
+                    ha='center', va='center', transform=ax5.transAxes)
+            ax5.set_title('Cross-validation scores')
 
         # Plot 6-8: Raw data, denoised data, noise (rest of middle row)
         all_data = np.concatenate([raw_data.flatten(), denoised_data.flatten(), noise.flatten()])
