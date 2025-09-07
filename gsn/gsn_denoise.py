@@ -92,6 +92,12 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
           whether to use unit-wise thresholding (possibly different thresholds
           for different units) or population thresholding (one threshold for
           all units). Matters only when <cv_mode> is 0 or 1. Default: 'unit'.
+        <unit_groups> - shape (nunits,). Integer array specifying which units should 
+          receive the same cv threshold. This is only applicable when <cv_threshold_per> 
+          is 'unit'. Units with the same integer value get the same cv threshold 
+          (computed by averaging scores for those groups of units). If <cv_threshold_per> 
+          is 'population', all units should have unit_group = 0. Default: np.arange(nunits) 
+          (each unit gets its own threshold).
         <cv_thresholds> - shape (1, n_thresholds). Vector of thresholds to evaluate in
           cross-validation. Matters only when <cv_mode> is 0 or 1.
           Each threshold is a positive integer indicating a potential 
@@ -198,6 +204,15 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
         }
         results = gsn_denoise(data, 0, opt)
 
+        # Unit-wise cross-validation with custom unit groupings
+        opt = {
+            'cv_mode': 0,  # Leave-one-out CV
+            'cv_threshold_per': 'unit',  # Unit-specific thresholds
+            'unit_groups': np.array([0, 0, 1, 1, 2, 2] + [3]*94),  # First 4 units in 2 groups, next 2 in another, rest in one group
+            'cv_thresholds': [1, 2, 3]  # Test these dimensions
+        }
+        results = gsn_denoise(data, 0, opt)
+
         # Single-trial denoising with population threshold
         opt = {
             'denoisingtype': 1,  # Single-trial mode
@@ -280,6 +295,25 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
     opt.setdefault('mag_frac', 0.95)
     opt.setdefault('denoisingtype', 0)  # Default to trial-averaged denoising
     
+    # Set default unit_groups based on cv_threshold_per
+    if 'unit_groups' not in opt:
+        if opt['cv_threshold_per'] == 'population':
+            opt['unit_groups'] = np.zeros(nunits, dtype=int)  # All units in group 0
+        else:  # 'unit'
+            opt['unit_groups'] = np.arange(nunits, dtype=int)  # Each unit gets its own group
+    
+    # Validate unit_groups
+    unit_groups = np.array(opt['unit_groups'], dtype=int)
+    if len(unit_groups) != nunits:
+        raise ValueError(f"unit_groups must have length {nunits}, got {len(unit_groups)}")
+    if not np.all(unit_groups >= 0):
+        raise ValueError("unit_groups must contain only non-negative integers")
+    if opt['cv_threshold_per'] == 'population' and not np.all(unit_groups == 0):
+        raise ValueError("When cv_threshold_per='population', all unit_groups must be 0")
+    
+    # Store validated unit_groups back in opt
+    opt['unit_groups'] = unit_groups
+    
     # compute the unit means since they are removed during denoising and will be added back
     trial_avg = np.mean(data, axis=2)
     results['unit_means'] = np.mean(trial_avg, axis=1)
@@ -348,7 +382,7 @@ def gsn_denoise(data, V=None, opt=None, wantfig=True):
             # Only keep first nunits columns to match eigenvector basis dimensions
             basis = basis[:, :nunits]
             magnitudes = np.ones(nunits)  # No meaningful magnitudes for random basis
-            results['basis_source'] = None  # No meaningful source matrix for random basis
+            results['basis_source'] = None  # No meaningful source matrix for random basis        
     else:
         # If V not int => must be a numpy array
         if not isinstance(V, np.ndarray):
@@ -483,8 +517,11 @@ def perform_cross_validation(data, basis, opt, results=None):
             0: n-1 train / 1 test split
             1: 1 train / n-1 test split
         <cv_threshold_per> - string.
-            'unit': different thresholds per unit
+            'unit': different thresholds per unit or unit group
             'population': same threshold for all units
+        <unit_groups> - shape (nunits,). Integer array specifying which units 
+            should receive the same cv threshold. Only applicable when cv_threshold_per='unit'.
+            Units with the same integer value get the same cv threshold.
         <cv_thresholds> - shape (1, n_thresholds).
             Dimensions to test
         <cv_scoring_fn> - function handle.
@@ -560,13 +597,26 @@ def perform_cross_validation(data, basis, opt, results=None):
         safe_thr = min(best_threshold, basis.shape[1])
         denoiser = basis[:, :safe_thr] @ basis[:, :safe_thr].T
     else:
-        # unit-wise: average over trials only
+        # unit-wise: average over trials only, then group by unit_groups
         avg_scores = np.mean(cv_scores, axis=1)  # (len(thresholds), nunits)
-        best_thresh_unitwise = []
-        for unit_i in range(nunits):
-            best_idx = np.argmax(avg_scores[:, unit_i])
-            best_thresh_unitwise.append(thresholds[best_idx])
-        best_thresh_unitwise = np.array(best_thresh_unitwise)
+        unit_groups = opt['unit_groups']
+        unique_groups = np.unique(unit_groups)
+        
+        best_thresh_unitwise = np.zeros(nunits, dtype=int)
+        
+        # For each group, find the best threshold by averaging CV scores within the group
+        for group_id in unique_groups:
+            group_mask = unit_groups == group_id
+            group_units = np.where(group_mask)[0]
+            
+            # Average CV scores across units in this group
+            group_avg_scores = np.mean(avg_scores[:, group_mask], axis=1)  # (len(thresholds),)
+            best_idx = np.argmax(group_avg_scores)
+            best_thresh_for_group = thresholds[best_idx]
+            
+            # Assign this threshold to all units in the group
+            best_thresh_unitwise[group_mask] = best_thresh_for_group
+            
         best_threshold = best_thresh_unitwise
                 
         # Construct unit-wise denoiser
@@ -1009,7 +1059,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
                     else:  # V == 3
                         title = 'Naive Trial-avg Data\nCovariance'
                     
-                    matrix_max = np.percentile(np.abs(matrix_to_show), 95)  # Use 95th percentile like example2
+                    matrix_max = np.max(np.abs(matrix_to_show))
                     
                     im1 = ax1.imshow(matrix_to_show, vmin=-matrix_max, vmax=matrix_max,
                                    aspect='equal', interpolation='nearest', cmap='RdBu_r')
@@ -1038,7 +1088,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
 
         # Plot 2: Full basis matrix (top middle-left)
         ax2 = fig.add_subplot(gs[0, 1])
-        basis_max = np.percentile(np.abs(results['fullbasis']), 99)
+        basis_max = np.max(np.abs(results['fullbasis']))
         im2 = ax2.imshow(results['fullbasis'], aspect='auto', interpolation='none', 
                         clim=(-basis_max, basis_max), cmap='RdBu_r')
         plt.colorbar(im2, ax=ax2)
@@ -1160,7 +1210,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
             cv_data = cv_data[valid_mask]
             
             cv_data = stats.zscore(cv_data,axis=0,ddof=1)
-            vmin, vmax = np.percentile(cv_data, [1, 99])
+            vmin, vmax = np.percentile(cv_data, [0, 100])
             
             # Set proper extent for imshow - ensure no white columns
             extent = [0, len(thresholds), nunits, 0]
@@ -1186,16 +1236,39 @@ def plot_diagnostic_figures(data, results, test_data=None):
                     unit_indices = np.arange(nunits) + 0.5  # Center dots in cells
                     threshold_positions = []
                     
-                    # Find the position of maximum CV score for each unit
-                    for unit_idx in range(nunits):
-                        # Get CV scores for this unit across all thresholds
-                        unit_cv_scores = cv_data[:, unit_idx]  # cv_data shape: (n_thresholds, n_units)
+                    # Check if unit_groups are being used
+                    unit_groups = results.get('opt', {}).get('unit_groups', np.arange(nunits))
+                    
+                    if 'unit_groups' in results.get('opt', {}) and not np.array_equal(unit_groups, np.arange(nunits)):
+                        # Unit groups are being used - show group-based thresholds
+                        unique_groups = np.unique(unit_groups)
                         
-                        # Find threshold index with maximum score
-                        max_thresh_idx = np.argmax(unit_cv_scores)
-                        
-                        # Position at center of that threshold's cell
-                        threshold_positions.append(max_thresh_idx + 0.5)
+                        for unit_idx in range(nunits):
+                            # Find which group this unit belongs to
+                            unit_group = unit_groups[unit_idx]
+                            
+                            # Get all units in this group
+                            group_mask = unit_groups == unit_group
+                            
+                            # Average CV scores across units in this group
+                            group_cv_scores = np.mean(cv_data[:, group_mask], axis=1)  # Average across group units
+                            
+                            # Find threshold index with maximum group score
+                            max_thresh_idx = np.argmax(group_cv_scores)
+                            
+                            # Position at center of that threshold's cell
+                            threshold_positions.append(max_thresh_idx + 0.5)
+                    else:
+                        # No unit grouping - use individual unit's maximum CV score
+                        for unit_idx in range(nunits):
+                            # Get CV scores for this unit across all thresholds
+                            unit_cv_scores = cv_data[:, unit_idx]  # cv_data shape: (n_thresholds, n_units)
+                            
+                            # Find threshold index with maximum score
+                            max_thresh_idx = np.argmax(unit_cv_scores)
+                            
+                            # Position at center of that threshold's cell
+                            threshold_positions.append(max_thresh_idx + 0.5)
                     
                     ax5.plot(threshold_positions, unit_indices, 'r.', markersize=4)
         else:
@@ -1205,7 +1278,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
 
         # Plot 6-8: Raw data, denoised data, noise (rest of middle row)
         all_data = np.concatenate([raw_data.flatten(), denoised_data.flatten(), noise.flatten()])
-        max_abs_val = np.percentile(np.abs(all_data), 99)
+        max_abs_val = np.max(np.abs(all_data))
         data_clim = (-max_abs_val, max_abs_val)
         
         # Raw data
@@ -1234,7 +1307,7 @@ def plot_diagnostic_figures(data, results, test_data=None):
 
         # Plot denoising matrix (first subplot in bottom row)
         ax9 = fig.add_subplot(gs[2, 0])
-        denoiser_max = np.percentile(np.abs(results['denoiser']), 99)
+        denoiser_max = np.max(np.abs(results['denoiser']))
         denoiser_clim = (-denoiser_max, denoiser_max)
         im9 = plt.imshow(results['denoiser'], aspect='auto', interpolation='none', clim=denoiser_clim, cmap='RdBu_r')
         plt.colorbar(im9)
