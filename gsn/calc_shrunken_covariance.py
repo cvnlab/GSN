@@ -243,18 +243,25 @@ def calc_shrunken_covariance(data,
         nll[p] = np.mean(-pr)
     
     # which achieves the minimum?
-    min0ix = np.argmin(nll)
-    
-    shrinklevel = shrinklevels[min0ix]
-    # Error checking (only in the case of multiple shrinkage levels)
+    # Use nanargmin (not argmin) to ignore shrinkage levels whose shrunken
+    # covariance was singular (-> NaN nll). This matches MATLAB's min(nll),
+    # which silently skips NaN. The all-NaN case is reported below.
     nll = nll.astype(float)
+    if np.all(np.isnan(nll)):
+        warnings.warn('All covariance matrices were singular.')
+        min0ix = 0  # fall back; downstream pipeline cannot recover meaningfully
+    else:
+        min0ix = int(np.nanargmin(nll))
 
+    shrinklevel = shrinklevels[min0ix]
+
+    # Error checking (only in the case of multiple shrinkage levels)
     if len(nll) > 1:
         if np.all(np.isnan(nll)):
-            warnings.warn('All covariance matrices were singular.')
+            pass  # already warned above
         elif len(np.unique(nll[np.isfinite(nll)])) == 1 and c.shape[0] > 1:
             warnings.warn('There was only one unique finite log-likelihood; something might be wrong?')
-        elif not np.isfinite(min0ix):
+        elif not np.isfinite(nll[min0ix]):
             warnings.warn('Selected likelihood is not finite; something might be wrong?')
 
     # old
