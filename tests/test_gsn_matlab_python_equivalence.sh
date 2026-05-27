@@ -143,6 +143,11 @@ should_run_test() {
 #   ntrial         - number of trials
 #   wantshrinkage  - 1 to use shrinkage, 0 to force full estimation
 #   uneven_frac    - fraction of (cond,trial) entries to mark NaN (0 = balanced)
+#   low_rank_spec  - optional "<rank_signal>:<rank_noise>:<noise_scale>" string. When
+#                    set, data is generated from a truly low-rank signal+noise model
+#                    so the empirical sample covariance is rank-deficient at the
+#                    population level. Used to stress the 1e-6*I ridge bug in the
+#                    2D path of calc_shrunken_covariance.py.
 run_gsn_equivalence_test() {
     local test_name="$1"
     local nvox="$2"
@@ -150,15 +155,17 @@ run_gsn_equivalence_test() {
     local ntrial="$4"
     local wantshrinkage="$5"
     local uneven_frac="${6:-0}"
+    local low_rank_spec="${7:-}"
 
     echo "=========================================="
     echo "Testing: $test_name"
     echo "Parameters: $nvox voxels, $ncond conditions, $ntrial trials"
-    echo "wantshrinkage=$wantshrinkage, uneven_frac=$uneven_frac"
+    echo "wantshrinkage=$wantshrinkage, uneven_frac=$uneven_frac, low_rank_spec=${low_rank_spec:-<none>}"
     echo "=========================================="
 
     # ---- Generate data with Python (shared input for both pipelines) ----
-    cat > "$TEST_DATA_DIR/generate_${test_name}_data.py" << 'EOFPYTHON'
+    if [ -z "$low_rank_spec" ]; then
+        cat > "$TEST_DATA_DIR/generate_${test_name}_data.py" << 'EOFPYTHON'
 import numpy as np
 import scipy.io
 import sys
@@ -216,6 +223,65 @@ scipy.io.savemat('TEST_DATA_DIR_PLACEHOLDER/TEST_NAME_PLACEHOLDER_data.mat', {'d
 
 print("Test data generated and saved successfully")
 EOFPYTHON
+    else
+        # Truly low-rank signal+noise generator. The population covariance has
+        # rank (rank_signal + rank_noise) < nvox, so the sample cov is also rank-
+        # deficient — and crucially, validation conditions live in the SAME
+        # low-rank subspace as training, which makes the 1e-6*I ridge mask the
+        # singularity at alpha=1 with a spuriously very-negative NLL (log-det
+        # dominates because the quadratic form along ridge-padded null directions
+        # is essentially zero).
+        cat > "$TEST_DATA_DIR/generate_${test_name}_data.py" << 'EOFPYTHON'
+import numpy as np
+import scipy.io
+
+rank_signal, rank_noise, noise_scale = LOW_RANK_SPEC_TUPLE_PLACEHOLDER
+
+nvox     = NVOX_PLACEHOLDER
+ncond    = NCOND_PLACEHOLDER
+ntrial   = NTRIAL_PLACEHOLDER
+
+assert rank_signal + rank_noise < nvox, \
+    f"low-rank generator requires rank_signal+rank_noise < nvox " \
+    f"(got {rank_signal}+{rank_noise} >= {nvox})"
+
+rng = np.random.RandomState(42)
+print(f"Generating low-rank data: nvox={nvox} ncond={ncond} ntrial={ntrial} "
+      f"rank_signal={rank_signal} rank_noise={rank_noise} noise_scale={noise_scale}")
+
+U_s, _ = np.linalg.qr(rng.randn(nvox, rank_signal))
+U_n, _ = np.linalg.qr(rng.randn(nvox, rank_noise))
+sig_s  = np.diag(np.linspace(1.0, 0.2, rank_signal))
+sig_n  = np.diag(noise_scale * np.linspace(1.0, 0.2, rank_noise))
+
+z_cond = rng.randn(rank_signal, ncond)
+signal = U_s @ sig_s @ z_cond           # (nvox, ncond)
+
+train_data = np.empty((nvox, ncond, ntrial), dtype=float)
+for t in range(ntrial):
+    z_noise = rng.randn(rank_noise, ncond)
+    train_data[:, :, t] = signal + U_n @ sig_n @ z_noise
+
+print(f"Generated data shape: {train_data.shape}")
+print(f"Data range: [{train_data.min():.6f}, {train_data.max():.6f}]")
+print(f"Data mean:  {train_data.mean():.6f}")
+print(f"Data std:   {train_data.std():.6f}")
+
+np.save('TEST_DATA_DIR_PLACEHOLDER/TEST_NAME_PLACEHOLDER_data.npy', train_data)
+scipy.io.savemat('TEST_DATA_DIR_PLACEHOLDER/TEST_NAME_PLACEHOLDER_data.mat', {'data': train_data})
+
+print("Test data generated and saved successfully")
+EOFPYTHON
+    fi
+
+    # Convert low_rank_spec "r_s:r_n:noise_scale" to a Python tuple literal.
+    local low_rank_tuple
+    if [ -n "$low_rank_spec" ]; then
+        IFS=':' read -r rs rn ns <<< "$low_rank_spec"
+        low_rank_tuple="(${rs}, ${rn}, ${ns})"
+    else
+        low_rank_tuple="(0, 0, 0.0)"
+    fi
 
     sed "s|GSN_ROOT_PLACEHOLDER|$GSN_ROOT|g; \
          s|TEST_DATA_DIR_PLACEHOLDER|$TEST_DATA_DIR|g; \
@@ -223,7 +289,8 @@ EOFPYTHON
          s|NVOX_PLACEHOLDER|$nvox|g; \
          s|NCOND_PLACEHOLDER|$ncond|g; \
          s|NTRIAL_PLACEHOLDER|$ntrial|g; \
-         s|UNEVEN_FRAC_PLACEHOLDER|$uneven_frac|g" \
+         s|UNEVEN_FRAC_PLACEHOLDER|$uneven_frac|g; \
+         s|LOW_RANK_SPEC_TUPLE_PLACEHOLDER|$low_rank_tuple|g" \
         "$TEST_DATA_DIR/generate_${test_name}_data.py" > "$TEST_DATA_DIR/generate_${test_name}_data_tmp.py"
     mv "$TEST_DATA_DIR/generate_${test_name}_data_tmp.py" "$TEST_DATA_DIR/generate_${test_name}_data.py"
 
@@ -534,6 +601,19 @@ TEST_DEFS=(
     "test7_uneven_noshrinkage|15|50|5|0|0.15|Uneven/no-shrinkage"
     "test8_tiny|5|12|3|1|0|Tiny edge case"
     "test9_argmin_nan_bug|15|8|3|1|0|argmin/NaN bug (rank-deficient cN)"
+    # Test 10: stresses the 2D data-cov ridge bug in calc_shrunken_covariance.py.
+    # Uses a truly low-rank generator (rank_signal=5, rank_noise=10 in a 50-dim
+    # space) so the POPULATION covariance has rank 15 < nvox=50. The 2D path's
+    # training cov is consequently rank-deficient and Python's lines 179/182 add
+    # c + 1e-6*I, making alpha=1 non-singular. Because the validation conditions
+    # live in the same rank-15 subspace as training, the quadratic form along
+    # the ridge-padded null directions is essentially zero, and the spuriously
+    # very-negative log-det dominates the NLL at alpha=1.
+    # Result: Python picks shrinklevelD=1.0 with NLL≈-205, while MATLAB's
+    # cholcov fails at alpha=1 -> NaN -> min() skips it and picks alpha=0.98.
+    # Downstream cSb / cNb diverge accordingly. The fix is to remove the two
+    # `c = c + np.eye(...) * 1e-6` lines in calc_shrunken_covariance.py.
+    "test10_ridge_2d_data_cov|50|40|3|1|0|Ridge bug 2D data-cov path|5:10:0.3"
 )
 
 # Parallel arrays keyed by test number (1-based). Sparse — only filled for tests that actually run.
@@ -545,9 +625,9 @@ for i in "${!TEST_DEFS[@]}"; do
     if ! should_run_test "$num"; then
         continue
     fi
-    IFS='|' read -r tname nvox ncond ntrial wantshrinkage uneven_frac label <<< "${TEST_DEFS[$i]}"
+    IFS='|' read -r tname nvox ncond ntrial wantshrinkage uneven_frac label low_rank_spec <<< "${TEST_DEFS[$i]}"
     echo "=== Test $num: $label ==="
-    if run_gsn_equivalence_test "$tname" "$nvox" "$ncond" "$ntrial" "$wantshrinkage" "$uneven_frac"; then
+    if run_gsn_equivalence_test "$tname" "$nvox" "$ncond" "$ntrial" "$wantshrinkage" "$uneven_frac" "$low_rank_spec"; then
         test_result_by_num[$num]="PASSED"
     else
         test_result_by_num[$num]="FAILED"
