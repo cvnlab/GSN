@@ -8,9 +8,6 @@ from gsn.calc_shrunken_covariance import calc_shrunken_covariance
 from gsn.construct_nearest_psd_covariance import construct_nearest_psd_covariance
 import scipy.stats as stats
 from scipy.spatial.distance import pdist
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
-from matplotlib.cm import get_cmap
 
 def rsa_noise_ceiling(data, opt = None):
     """
@@ -484,6 +481,14 @@ def rsa_noise_ceiling(data, opt = None):
     if opt['mode'] == 0 and opt['wantfig'] != 0:
         if opt['wantverbose']:
             print('Creating figure...')
+
+        # Lazy-import matplotlib only when actually drawing a figure.
+        # Top-level imports here would force a ~100ms matplotlib load on
+        # every `import gsn`, even for perform_gsn / mode=1 callers who
+        # never need a plot.
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+        from matplotlib.cm import get_cmap
 
         fig = plt.figure(figsize=(26, 20))  # Adjusted size for Python
         gs = fig.add_gridspec(4, 6)
