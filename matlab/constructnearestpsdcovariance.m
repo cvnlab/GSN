@@ -37,16 +37,14 @@ if err == 0
 % if err is not 0, we have to do some work
 else
 
-  % construct nearest PSD matrix (with respect to Frobenius norm)
-  try
-    [u,s,v] = svd(c,0);
-    c2 = (c + v*s*v')/2;  % average with symmetric polar factor
-  catch  % in some rare cases, the svd fails to converge.
-         % in that case, let's resort to this approach:
-    [v,d] = eig(c);
-    d(d<0) = 0;
-    c2 = v*d*v';
-  end
+  % construct nearest PSD matrix (with respect to Frobenius norm).
+  % Input is symmetric (we symmetrized above), so eig is the right tool:
+  % for symmetric M with eigendecomposition V*D*V', the SVD-based form
+  % (M + V*|D|*V')/2 simplifies to V*max(D,0)*V' — exactly what we do
+  % here, but without doing twice the work that SVD does.
+  [v,d] = eig(c);
+  d(d<0) = 0;
+  c2 = v*d*v';
   c2 = (c2+c2')/2;  % ensure symmetric again
 
   % check that it is indeed PSD
