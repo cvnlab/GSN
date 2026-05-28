@@ -99,19 +99,23 @@ except ImportError:
 
 
 def _torch_dtype_for(arr, device):
-    """Pick the torch dtype that matches the numpy dtype of ``arr``.
+    """Pick the torch dtype that matches the numpy/torch dtype of ``arr``.
 
     Covariance estimation is sensitive to conditioning so float64 is the
     safe default; we only downcast to float32 if the caller deliberately
     passed float32 data — or if we are on MPS, where Apple Metal does
     not support float64.
+
+    Accepts either a numpy array (``arr.dtype`` is a numpy dtype) or a
+    torch tensor (``arr.dtype`` is a torch dtype); we compare via
+    ``str(arr.dtype)`` so both branches collapse cleanly.
     """
     if device == 'mps':
         # MPS has no float64 support. Downcasting here is unavoidable;
         # callers who care about float64 conditioning should use cpu or
         # cuda. We don't warn because every call would warn.
         return _torch.float32
-    if arr.dtype == np.float32:
+    if str(arr.dtype) in ('float32', 'torch.float32'):
         return _torch.float32
     return _torch.float64
 

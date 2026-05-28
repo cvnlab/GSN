@@ -1,5 +1,4 @@
-import numpy as np
-from gsn.rsa_noise_ceiling import rsa_noise_ceiling
+from gsn.fast_perform_gsn import fast_perform_gsn
 
 def perform_gsn(data, opt=None):
     """
@@ -77,7 +76,8 @@ def perform_gsn(data, opt=None):
     results = perform_gsn(data)
     """
 
-        # Set default options if not provided
+    # Defaults — fast_perform_gsn fills in the rest. We honor None as
+    # "use default" for backwards compatibility with the previous wrapper.
     if opt is None:
         opt = {}
     if 'wantverbose' not in opt or opt['wantverbose'] is None:
@@ -85,21 +85,4 @@ def perform_gsn(data, opt=None):
     if 'wantshrinkage' not in opt or opt['wantshrinkage'] is None:
         opt['wantshrinkage'] = 1
 
-    # Prepare opt for rsa_noise_ceiling.py
-    opt['mode'] = 1
-    opt['ncsims'] = 0
-    opt['wantfig'] = 0
-    if opt['wantshrinkage']:
-        opt['shrinklevels'] = np.linspace(0,1,51) # allow default shrinkage levels
-    else:
-        opt['shrinklevels'] = [1]  # force only full estimation
-
-    # Call the rsa_noise_ceiling function
-    # rsa_noise_ceiling returns a tuple where the third element is the results
-    results = rsa_noise_ceiling(data, opt)[2]
-
-    # Remove 'sc' and 'splitr' from results
-    results.pop('sc', None)
-    results.pop('splitr', None)
-
-    return results
+    return fast_perform_gsn(data, opt)
