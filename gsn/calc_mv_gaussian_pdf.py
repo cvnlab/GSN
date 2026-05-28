@@ -1,5 +1,6 @@
 import numpy as np
 import math
+from scipy.linalg import solve_triangular
 
 def calc_mv_gaussian_pdf(pts, mn, c, wantomitexp = 0):
     """
@@ -41,12 +42,9 @@ def calc_mv_gaussian_pdf(pts, mn, c, wantomitexp = 0):
         f = []
         return f, err
     
-    try:
-        pts = np.matmul(pts, np.linalg.pinv(T))
-    except:
-        err = 1
-        f = []
-        return f, err
+    # pts @ inv(T) via triangular solve — T is upper-triangular from chol,
+    # matching MATLAB's `pts / T` (mrdivide dispatches to a triangular solve).
+    pts = solve_triangular(T, pts.T, lower=False, trans='T').T
         
     # finish up
     f = -0.5 * np.sum(pts**2,axis = 1) - np.sum(np.log(np.diag(T))) - d*np.log(2*math.pi)/2
