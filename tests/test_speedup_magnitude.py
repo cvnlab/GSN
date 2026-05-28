@@ -218,26 +218,61 @@ def time_matlab(nunits_list, ncond, ntrial, repeats, matlab_bin, data_dir):
 # ---------------------------------------------------------------------------
 
 _COLORS = {
-    'python-main-reference': '#8c564b',  # old main-branch reference (no speedups)
-    'python-numpy':          '#1f77b4',
-    'python-torch-cpu':      '#ff7f0e',
-    'python-torch-cuda':     '#2ca02c',
-    'python-torch-mps':      '#d62728',
+    'python-main-reference': '#000000',  # reference: black
+    'python-numpy':          '#2ca02c',  # fast_numpy: green
+    'python-torch-cpu':      '#1f77b4',  # fast_torch_cpu: blue
+    'python-torch-cuda':     '#d62728',  # fast_torch_cuda: red
+    'python-torch-mps':      '#ff7f0e',
     'matlab':                '#9467bd',
 }
 
+_MARKERS = {
+    'python-main-reference': 's',  # square
+    'python-numpy':          'D',  # diamond
+    'python-torch-cpu':      '^',  # triangle
+    'python-torch-cuda':     'o',  # circle
+    'python-torch-mps':      'v',
+    'matlab':                'P',
+}
 
-def save_figure(results, args, path):
+# How each backend appears in the legend. Anything not listed falls back
+# to the raw key. The naming distinguishes (a) the unoptimized reference
+# from (b) the speedup branch, and within (b) which 51-level loop strategy
+# is used: per-slot Python for-loop using numpy + scipy.linalg.solve_triangular
+# vs. one batched torch.linalg.cholesky_ex over the entire stack on CPU or GPU.
+_DISPLAY_NAMES = {
+    'python-main-reference': 'gsn.perform_gsn (reference)',
+    'python-numpy':          'numpy + scipy.linalg loop',
+    'python-torch-cpu':      'torch CPU (batched)',
+    'python-torch-cuda':     'torch CUDA (batched)',
+    'python-torch-mps':      'torch MPS (batched)',
+    'matlab':                'matlab',
+}
+
+
+def save_figure(results, args, path, *,
+                title='perform_gsn runtime scaling',
+                extrap_max=2e5, fit_min_n=1000):
+    """Single-panel log-log figure with power-law extrapolation.
+
+    Layout:
+      - solid line + filled markers on the measured range
+      - dashed extrapolation extending from the last measured point out
+        to ``extrap_max`` using a power-law fit on the N >= fit_min_n tail
+      - horizontal reference lines at 1 min / 10 min / 1 hr / 10 hr with
+        labels on the right edge
+      - legend lists each backend as "name (measured)" plus a separate
+        "extrap: t ≈ a·N^b" entry per backend
+      - gray shading over the extrapolation region
+    """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
-    fig, (ax_abs, ax_extrap, ax_rel) = plt.subplots(
-        1, 3, figsize=(18, 5.5), gridspec_kw={'wspace': 0.3})
+    fig, ax = plt.subplots(figsize=(11, 7))
 
     nunits = np.array(args.nunits, dtype=float)
-    # Missing (method, N) cells get NaN so methods can opt out of late N
-    # values without crashing the renderer (e.g. matlab skipped at N=5000).
     medians = {
         m: np.array([
             float(np.median(results[m][N])) if N in results[m] else np.nan
@@ -245,86 +280,89 @@ def save_figure(results, args, path):
         ]) for m in results
     }
 
-    # ---- Panel 1: absolute timing on measured range (linear axes)
-    for method in results:
-        m = np.isfinite(medians[method])
-        ax_abs.plot(nunits[m], medians[method][m], 'o-', label=method,
-                    color=_COLORS.get(method))
-    ax_abs.set_xlabel('nunits (voxels)')
-    ax_abs.set_ylabel('median seconds per perform_gsn call')
-    ax_abs.set_title('Absolute runtime (measured)')
-    ax_abs.grid(True, alpha=0.3)
-    ax_abs.legend()
+    # Find the largest measured N across any method; the extrapolation
+    # starts there and runs to extrap_max.
+    finite_n_per_method = {
+        m: nunits[np.isfinite(medians[m]) & (medians[m] > 0)]
+        for m in results
+    }
+    all_max_measured = max((arr.max() for arr in finite_n_per_method.values()
+                            if arr.size > 0), default=None)
+    if all_max_measured is None:
+        raise RuntimeError('no measured points to plot')
 
-    # ---- Panel 2: power-law extrapolation to N=1e6 (log Y).
-    # GSN's bottleneck is per-call O(N^3) Cholesky / eigh, so wall-clock
-    # follows time = a * N^b with b near 3. Small-N points are
-    # overhead-dominated (Python interpreter / MATLAB startup tax) and
-    # pull the fitted exponent below the true asymptotic, so we restrict
-    # both the displayed markers and the fit to N > 1000.
-    FIT_MIN_N = 1000
-    in_range = nunits > FIT_MIN_N
-    N_extrap = np.logspace(np.log10(FIT_MIN_N), 6, 200)
+    # Shade the extrapolated x-range so it reads as a projection, not data.
+    ax.axvspan(all_max_measured, extrap_max, color='black', alpha=0.04, zorder=0)
+
+    # ---- Plot each backend: measured line+markers, then dashed extrapolation
+    legend_handles = []
+    legend_labels = []
     for method in results:
         ts = medians[method]
-        ok = np.isfinite(ts) & (ts > 0) & in_range
-        if ok.sum() < 2:
+        ok = np.isfinite(ts) & (ts > 0)
+        if ok.sum() < 1:
             continue
-        slope, intercept = np.polyfit(np.log(nunits[ok]), np.log(ts[ok]), 1)
+        color = _COLORS.get(method, 'gray')
+        marker = _MARKERS.get(method, 'o')
+        disp = _DISPLAY_NAMES.get(method, method)
+
+        # Solid line + filled markers on measured range
+        ax.plot(nunits[ok], ts[ok], marker=marker, linestyle='-', color=color,
+                markersize=8, linewidth=1.8, zorder=3)
+        legend_handles.append(Line2D([0], [0], marker=marker, color=color,
+                                     linestyle='-', linewidth=1.8,
+                                     markersize=8))
+        legend_labels.append(f'{disp} (measured)')
+
+        # Power-law fit on the tail (N >= fit_min_n) when available;
+        # otherwise use all measured points.
+        tail = ok & (nunits >= fit_min_n)
+        fit_mask = tail if tail.sum() >= 2 else ok
+        if fit_mask.sum() < 2:
+            continue
+        slope, intercept = np.polyfit(np.log(nunits[fit_mask]),
+                                       np.log(ts[fit_mask]), 1)
         a = np.exp(intercept)
+        # Extrapolation starts at the method's own largest measured N so
+        # the solid + dashed line is continuous.
+        n_start = nunits[ok].max()
+        N_extrap = np.logspace(np.log10(n_start), np.log10(extrap_max), 200)
         t_extrap = a * N_extrap ** slope
-        color = _COLORS.get(method)
-        ax_extrap.plot(nunits[ok], ts[ok], 'o', color=color, markersize=7)
-        ax_extrap.plot(N_extrap, t_extrap, '--', color=color,
-                       label=f'{method}  (~ N^{slope:.2f})')
+        ax.plot(N_extrap, t_extrap, linestyle='--', color=color,
+                linewidth=1.3, zorder=2, alpha=0.85)
+        legend_handles.append(Line2D([0], [0], color=color, linestyle='--',
+                                     linewidth=1.3))
+        legend_labels.append(f'extrap: t ≈ {a:.2e} · N^{slope:.2f}')
 
-    # horizontal reference lines for human-scale costs
-    for sec, label in [(1, '1 sec'), (60, '1 min'), (3600, '1 hour'),
-                       (86400, '1 day')]:
-        ax_extrap.axhline(sec, color='gray', linestyle=':', alpha=0.5)
-        ax_extrap.text(N_extrap[-1] * 0.95, sec * 1.15, label,
-                       fontsize=8, color='gray', ha='right', va='bottom')
+    # ---- Horizontal time-reference lines on the right edge
+    ref_lines = [
+        (60,    '1 min',  'goldenrod'),
+        (600,   '10 min', 'darkorange'),
+        (3600,  '1 hr',   'firebrick'),
+        (36000, '10 hr',  'darkred'),
+    ]
+    for sec, label, lcolor in ref_lines:
+        ax.axhline(sec, color=lcolor, linestyle='-', linewidth=0.8,
+                   alpha=0.6, zorder=1)
+        ax.text(extrap_max * 1.02, sec, label, color=lcolor,
+                fontsize=10, va='center', ha='left', fontweight='bold')
 
-    ax_extrap.set_xscale('log')
-    ax_extrap.set_yscale('log')
-    ax_extrap.set_xlabel('nunits (voxels, log)')
-    ax_extrap.set_ylabel('extrapolated seconds per perform_gsn call (log)')
-    ax_extrap.set_title(f'Power-law extrapolation to N = 1,000,000  (fit on N > {FIT_MIN_N})')
-    ax_extrap.set_xlim(FIT_MIN_N * 0.8, 1.2e6)
-    ax_extrap.grid(True, which='both', alpha=0.3)
-    ax_extrap.legend(loc='upper left')
+    # ---- Axes, ticks, labels
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_xlim(nunits.min() * 0.8, extrap_max)
+    ax.set_xlabel('nunits (log scale)', fontsize=12)
+    ax.set_ylabel('perform_gsn wall-clock time (s, log scale)', fontsize=12)
+    ax.set_title(f'{title} — ncond={args.ncond}, ntrial={args.ntrial}, '
+                 f'repeats={args.repeats}', fontsize=12)
+    ax.grid(True, which='major', alpha=0.4)
+    ax.grid(True, which='minor', alpha=0.15)
 
-    # ---- Panel 3: speedup relative to a chosen baseline (linear axes).
-    # Prefer python-main-reference when present so the headline numbers
-    # reflect the cumulative branch win; fall back to python-numpy (the
-    # already-optimized fallback) or whichever method has the highest
-    # mean wall clock.
-    if 'python-main-reference' in medians and np.any(np.isfinite(medians['python-main-reference'])):
-        baseline_name = 'python-main-reference'
-    elif 'python-numpy' in medians:
-        baseline_name = 'python-numpy'
-    else:
-        baseline_name = max(medians, key=lambda m: float(np.nanmean(medians[m])))
-    baseline = medians[baseline_name]
-    for method in results:
-        if method == baseline_name:
-            continue
-        m = np.isfinite(medians[method]) & np.isfinite(baseline)
-        ax_rel.plot(nunits[m], (baseline / medians[method])[m], 'o-',
-                    label=method, color=_COLORS.get(method))
-    ax_rel.axhline(1.0, color='black', linestyle='--', alpha=0.4,
-                   label=f'{baseline_name} = 1.0')
-    ax_rel.set_xlabel('nunits (voxels)')
-    ax_rel.set_ylabel(f'speedup vs {baseline_name}')
-    ax_rel.set_title('Relative speedup')
-    ax_rel.grid(True, alpha=0.3)
-    ax_rel.legend()
+    ax.legend(legend_handles, legend_labels, loc='upper left', fontsize=9,
+              framealpha=0.92)
 
-    fig.suptitle(
-        f'GSN benchmark — ncond={args.ncond}, ntrial={args.ntrial}, '
-        f'repeats={args.repeats}',
-        fontsize=11)
-    fig.savefig(path, dpi=120, bbox_inches='tight')
+    fig.tight_layout()
+    fig.savefig(path, dpi=130, bbox_inches='tight')
     print(f"\nFigure saved to {path}")
 
 
