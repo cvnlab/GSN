@@ -98,19 +98,53 @@ except ImportError:
     _HAS_TORCH = False
 
 
-def _torch_dtype_for(arr):
+def _torch_dtype_for(arr, device):
     """Pick the torch dtype that matches the numpy dtype of ``arr``.
 
     Covariance estimation is sensitive to conditioning so float64 is the
     safe default; we only downcast to float32 if the caller deliberately
-    passed float32 data.
+    passed float32 data — or if we are on MPS, where Apple Metal does
+    not support float64.
     """
+    if device == 'mps':
+        # MPS has no float64 support. Downcasting here is unavoidable;
+        # callers who care about float64 conditioning should use cpu or
+        # cuda. We don't warn because every call would warn.
+        return _torch.float32
     if arr.dtype == np.float32:
         return _torch.float32
     return _torch.float64
 
 
-def _torch_batched(c, pts_zm, shrinklevels):
+def _resolve_device(device):
+    """Normalize a device string. ``'auto'`` picks cuda > mps > cpu.
+
+    Returns the string we'll hand to ``torch.as_tensor(device=...)``.
+    Raises a clear error if the caller asked for a device that this
+    torch install can't reach — better than letting the GPU dispatch
+    fail deep in a kernel call.
+    """
+    if device is None or device == 'cpu':
+        return 'cpu'
+    if device == 'auto':
+        if _torch.cuda.is_available():
+            return 'cuda'
+        if hasattr(_torch.backends, 'mps') and _torch.backends.mps.is_available():
+            return 'mps'
+        return 'cpu'
+    if device == 'cuda' and not _torch.cuda.is_available():
+        raise RuntimeError(
+            "device='cuda' requested but torch.cuda.is_available() is False. "
+            "Install a CUDA-enabled torch build or pass device='auto'/'cpu'.")
+    if device == 'mps' and not (hasattr(_torch.backends, 'mps')
+                                and _torch.backends.mps.is_available()):
+        raise RuntimeError(
+            "device='mps' requested but torch MPS backend is unavailable "
+            "(macOS 12.3+ with Apple Silicon required).")
+    return device
+
+
+def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
     """Batched ``cholesky_ex`` + batched ``solve_triangular`` over all S levels.
 
     This is the fast path. The trick is that ``c`` and ``pts_zm`` do not
@@ -128,6 +162,11 @@ def _torch_batched(c, pts_zm, shrinklevels):
         Already-mean-subtracted validation points (M held-out samples).
     shrinklevels : (S,) ndarray
         Shrinkage fractions in [0, 1].
+    device : {'cpu', 'cuda', 'mps', 'auto'}
+        Torch device string. 'cpu' is the default and ideal for typical
+        N ≤ ~1000 (host↔device transfer dominates on GPU below that).
+        For larger N, 'cuda' or 'mps' is the right call; 'auto' picks
+        cuda > mps > cpu based on availability.
 
     Returns
     -------
@@ -139,16 +178,18 @@ def _torch_batched(c, pts_zm, shrinklevels):
     M = pts_zm.shape[0]
     S = len(shrinklevels)
     log_2pi = float(np.log(2 * np.pi))
-    tdtype = _torch_dtype_for(c)
+    tdtype = _torch_dtype_for(c, device)
 
-    # Move inputs to torch tensors. We keep everything on CPU here —
-    # callers who want GPU dispatch can extend this dispatch table; the
-    # win we care about (10× on CPU at N≈1000) comes from torch's
-    # cross-slot LAPACK threading and from collapsing 51 Python-level
-    # iterations into one C-level batched call.
-    c_t = _torch.as_tensor(c, dtype=tdtype)
-    pts_zm_t = _torch.as_tensor(pts_zm, dtype=tdtype)
-    alphas = _torch.as_tensor(shrinklevels, dtype=tdtype)
+    # Move inputs to torch tensors on the chosen device. as_tensor copies
+    # to device when needed; on cpu it can be a zero-copy view of the
+    # numpy buffer. The win we care about (10× on CPU at N≈1000) comes
+    # from torch's cross-slot LAPACK threading and from collapsing 51
+    # Python-level iterations into one C-level batched call; CUDA/MPS
+    # widens the gap further at large N but adds host↔device transfer
+    # cost that doesn't pay off until N is well into the thousands.
+    c_t = _torch.as_tensor(c, dtype=tdtype, device=device)
+    pts_zm_t = _torch.as_tensor(pts_zm, dtype=tdtype, device=device)
+    alphas = _torch.as_tensor(shrinklevels, dtype=tdtype, device=device)
     diag_c = _torch.diag(c_t)                                  # (N,)
     D = _torch.diag(diag_c)                                    # (N, N)
 
@@ -249,7 +290,7 @@ def _numpy_loop(c, pts_zm, shrinklevels):
     return nll
 
 
-def batched_shrunken_nll(c, pts_zm, shrinklevels, use_torch=None):
+def batched_shrunken_nll(c, pts_zm, shrinklevels, use_torch=None, device='cpu'):
     """Mean negative log-likelihood at every shrinkage level, in one shot.
 
     This is the entry point used by ``calc_shrunken_covariance``. It
@@ -270,6 +311,11 @@ def batched_shrunken_nll(c, pts_zm, shrinklevels, use_torch=None):
         ``None`` uses torch when available. Mostly useful for
         benchmarking and for tests that want to exercise the numpy path
         explicitly.
+    device : {'cpu', 'cuda', 'mps', 'auto'}, optional
+        Torch device for the fast path. Ignored when the numpy path is
+        used. Default ``'cpu'``. ``'auto'`` picks cuda > mps > cpu by
+        availability. GPU devices only beat CPU at N ≳ a few hundred
+        because of host↔device transfer; below that, ``'cpu'`` wins.
 
     Returns
     -------
@@ -280,5 +326,5 @@ def batched_shrunken_nll(c, pts_zm, shrinklevels, use_torch=None):
     if use_torch is None:
         use_torch = _HAS_TORCH
     if use_torch:
-        return _torch_batched(c, pts_zm, shrinklevels)
+        return _torch_batched(c, pts_zm, shrinklevels, device=_resolve_device(device))
     return _numpy_loop(c, pts_zm, shrinklevels)

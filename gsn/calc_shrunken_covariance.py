@@ -3,10 +3,11 @@ import warnings
 from gsn.utilities import squish, deterministic_randperm
 from gsn.batched_nll import batched_shrunken_nll
 
-def calc_shrunken_covariance(data, 
-                           leaveout = 5, 
-                           shrinklevels = np.linspace(0,1,51), 
-                           wantfull = 0):
+def calc_shrunken_covariance(data,
+                           leaveout = 5,
+                           shrinklevels = np.linspace(0,1,51),
+                           wantfull = 0,
+                           device = 'cpu'):
     """
     mn, c, shrinklevels, nll = calc_shrunken_covariance(data,leaveout,shrinklevels,wantfull)
 
@@ -26,8 +27,12 @@ def calc_shrunken_covariance(data,
     <wantfull> (optional) is whether to use the identified optimal shrinkage
     fraction to re-estimate the mean and covariance using the full dataset
     (i.e. including the initially left-out data). Default: 0.
+    <device> (optional) is the torch device for the batched shrinkage-NLL
+    fast path. One of 'cpu' (default), 'cuda', 'mps', or 'auto'. See
+    gsn.batched_nll.batched_shrunken_nll. The numpy fallback runs when
+    torch is not installed and ignores this argument.
 
-    Using (N-1)/N of the data (randomly selected), calculate a covariance 
+    Using (N-1)/N of the data (randomly selected), calculate a covariance
     matrix and shrink the off-diagonal elements to 0 according to
     <shrinklevels>. (The diagonal elements are left untouched.) The shrinkage
     level that maximizes the likelihood (i.e., minimizes the negative log 
@@ -197,7 +202,7 @@ def calc_shrunken_covariance(data,
     else:
         pts_zm = data[ii] - mn
 
-    nll = batched_shrunken_nll(c, pts_zm, shrinklevels)
+    nll = batched_shrunken_nll(c, pts_zm, shrinklevels, device=device)
     
     # which achieves the minimum?
     # Use nanargmin (not argmin) to ignore shrinkage levels whose shrunken

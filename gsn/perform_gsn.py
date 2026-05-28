@@ -12,6 +12,11 @@ def perform_gsn(data, opt=None):
     opt (dict, optional): A dictionary with the following optional fields:
         wantverbose (bool, optional): Whether to print status statements. Default is True.
         wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is True.
+        device (str, optional): Torch device for the batched shrinkage-NLL fast path.
+            One of 'cpu' (default), 'cuda', 'mps', or 'auto' (picks cuda > mps > cpu by
+            availability). 'cpu' is the right choice up to N ≈ 1000 voxels because
+            GPU host↔device transfer dominates below that; 'cuda' / 'mps' open up
+            the GPU path for larger N. Requires torch (`pip install gsn[fast]`).
 
     Regarding uneven number of trials across conditions:
     - It is acceptable that different conditions may have different numbers
