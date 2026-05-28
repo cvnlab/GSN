@@ -1,7 +1,5 @@
 import numpy as np
-import math
 import warnings
-import scipy.stats as stats
 from gsn.utilities import squish, deterministic_randperm
 from gsn.calc_mv_gaussian_pdf import calc_mv_gaussian_pdf
 
@@ -167,20 +165,11 @@ def calc_shrunken_covariance(data,
         
         # calculate covariance from the training data (variables x variables)
         c = np.cov(data[iinot].T, bias = False)
-        
+
         # Handle single variable case where np.cov returns a scalar
         if np.ndim(c) == 0:
             c = np.array([[c]])
-        
-        # If covariance matrix is singular or SVD doesn't converge, add small diagonal term
-        try:
-            rank = np.linalg.matrix_rank(c)
-        except np.linalg.LinAlgError:
-            c = c + np.eye(c.shape[0]) * 1e-6
-        else:
-            if rank < c.shape[0]:
-                c = c + np.eye(c.shape[0]) * 1e-6
-                
+
         # calculate the mean from the training data (1 x variables)
         mn = np.mean(data[iinot],0)
             
