@@ -148,6 +148,48 @@ def _resolve_device(device):
     return device
 
 
+def _pick_chunk_size(N, M, S, dtype, device, mem_budget_gb=None):
+    """Largest shrinkage-level chunk that fits the (chunk, N, N) working set.
+
+    The peak GPU memory we have to allocate when evaluating one chunk of
+    shrinkage levels at a time is dominated by three tensors:
+
+      - ``covs[chunk]``:  chunk * N²  (the stacked shrunken covariances)
+      - ``Ls[chunk]``:    chunk * N²  (the Cholesky factors)
+      - ``Y[chunk]``:     chunk * N * M  (the triangular-solve RHS)
+
+    so total ≈ chunk * (2N² + N*M) * dtype-bytes. We size the chunk so
+    that fits under ~70 % of the device's currently-free memory, leaving
+    headroom for PyTorch's allocator overhead and for caller tensors
+    (cSb, cNb, …) that live outside this function. For N ≤ ~3000 the
+    full S=51 stack typically fits and we return S unchanged; for larger
+    N or smaller-memory devices we drop to smaller chunks transparently.
+    """
+    bytes_per = 4 if dtype == _torch.float32 else 8
+    per_slot_bytes = (2 * N * N + N * M) * bytes_per
+
+    if mem_budget_gb is None:
+        dev_str = str(device)
+        if dev_str.startswith('cuda'):
+            try:
+                free, _total = _torch.cuda.mem_get_info(device)
+                # 70 % of free memory; the other 30 % covers caller-side
+                # tensors and torch allocator fragmentation.
+                mem_budget_gb = (free * 0.7) / (1024 ** 3)
+            except Exception:
+                # ~30 GB is a safe budget on H100 80GB with caller tensors.
+                mem_budget_gb = 30.0
+        elif dev_str == 'mps':
+            # MPS shares unified memory with the host; be conservative.
+            mem_budget_gb = 8.0
+        else:
+            mem_budget_gb = 30.0
+
+    chunk = int((mem_budget_gb * 1024 ** 3) // max(per_slot_bytes, 1))
+    chunk = max(1, min(S, chunk))
+    return chunk
+
+
 def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
     """Batched ``cholesky_ex`` + batched ``solve_triangular`` over all S levels.
 
@@ -197,59 +239,61 @@ def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
     diag_c = _torch.diag(c_t)                                  # (N,)
     D = _torch.diag(diag_c)                                    # (N, N)
 
-    # Build the (S, N, N) stack of shrunken covariances in one
-    # vectorized expression. See the module docstring for the
-    # equivalence between the multiplicative "scale off-diagonals,
-    # preserve diagonal" form and this convex-combination form.
-    covs = (alphas[:, None, None] * c_t.unsqueeze(0)
-            + (1 - alphas)[:, None, None] * D.unsqueeze(0))    # (S, N, N)
-
-    # cholesky_ex returns (L, info). info[s] == 0 means slot s
-    # factorized successfully; any other value indicates the s-th matrix
-    # was not positive definite. Crucially, it does NOT raise on
-    # failures — degenerate slots simply propagate as garbage L values
-    # which we mask out below. This is what enables clean per-slot NaN
-    # semantics in a single batched call.
-    Ls, info = _torch.linalg.cholesky_ex(covs, upper=False)
-    ok = info == 0
-    ok_np = ok.cpu().numpy().astype(bool)
-
+    # Chunk over shrinkage levels so the working set (covs, Ls, Y) fits
+    # in available device memory. For N ≤ ~3000 with the default S=51
+    # one chunk covers everything and behavior matches the original
+    # single-batched-call path; only large-N or memory-constrained
+    # devices fall into multi-chunk territory.
+    chunk_size = _pick_chunk_size(N, M, S, tdtype, device)
     nll = np.full(S, np.nan, dtype=np.float64)
-    if ok_np.any():
+    for start in range(0, S, chunk_size):
+        end = min(start + chunk_size, S)
+        alphas_chunk = alphas[start:end]
+        covs = (alphas_chunk[:, None, None] * c_t.unsqueeze(0)
+                + (1 - alphas_chunk)[:, None, None] * D.unsqueeze(0))
+
+        # cholesky_ex returns (L, info). info[s] == 0 means slot s
+        # factorized successfully; any other value indicates the s-th
+        # matrix was not positive definite. Crucially, it does NOT
+        # raise on failures — degenerate slots propagate as garbage L
+        # which we mask out below. This is what enables clean per-slot
+        # NaN semantics in a single batched call.
+        Ls, info = _torch.linalg.cholesky_ex(covs, upper=False)
+        del covs                            # free before allocating Y
+        ok = info == 0
+        ok_np = ok.cpu().numpy().astype(bool)
+        if not ok_np.any():
+            continue
         n_ok = int(ok_np.sum())
-        Ls_ok = Ls[ok]                                         # (S_ok, N, N)
+        Ls_ok = Ls[ok]                                         # (n_ok, N, N)
+        del Ls
 
         # Build the batched right-hand side. We want
         #     y_{s, :, m} = L_s^{-1} pts_zm[m, :]^T
         # for every slot s and every held-out point m. The RHS is the
         # same across slots, so we broadcast pts_zm.T from (N, M) to
-        # (S_ok, N, M) using expand (a zero-copy view). solve_triangular
-        # broadcasts naturally over the leading batch dimension.
-        rhs = pts_zm_t.T.unsqueeze(0).expand(n_ok, N, M)       # (S_ok, N, M)
+        # (n_ok, N, M) using expand (a zero-copy view).
+        rhs = pts_zm_t.T.unsqueeze(0).expand(n_ok, N, M)
         Y = _torch.linalg.solve_triangular(
-            Ls_ok, rhs, upper=False, unitriangular=False)      # (S_ok, N, M)
+            Ls_ok, rhs, upper=False, unitriangular=False)
+        sq = (Y ** 2).sum(dim=1)                               # (n_ok, M)
+        del Y
 
-        # ||y_{s, :, m}||^2 — the quadratic-form term in the Gaussian
-        # log-density, evaluated at every held-out point under every
-        # surviving shrinkage level.
-        sq = (Y ** 2).sum(dim=1)                               # (S_ok, M)
-
-        # log|c2_s| = 2 * sum(log diag(L_s)) — the normalizing term.
-        # diagonal() with dim1/dim2 picks the diagonal per batch slot
-        # in one op.
         logdet = _torch.log(
             _torch.diagonal(Ls_ok, dim1=-2, dim2=-1)
-        ).sum(dim=1)                                           # (S_ok,)
+        ).sum(dim=1)                                           # (n_ok,)
+        del Ls_ok
 
-        # Per-sample log-density, batched. The 0.5 * N * log(2π) term
-        # is constant across slots and samples but cheap to add here.
         log_pdf = (-0.5 * sq
                    - logdet.unsqueeze(1)
-                   - 0.5 * N * log_2pi)                        # (S_ok, M)
+                   - 0.5 * N * log_2pi)                        # (n_ok, M)
 
         # Mean over held-out samples; negate so smaller = better. Only
-        # the successful slots are written; the rest stay NaN.
-        nll[ok_np] = (-log_pdf.mean(dim=1)).cpu().numpy()
+        # the successful slots in this chunk are written; the rest stay
+        # NaN. ``ok_np`` is chunk-local (length end-start), so we map
+        # its True positions back to absolute indices in the full nll.
+        nll[start + np.flatnonzero(ok_np)] = (
+            -log_pdf.mean(dim=1)).cpu().numpy()
     return nll
 
 
