@@ -144,3 +144,6 @@ dmypy.json
 tests/speedup_bench_data/
 tests/speedup_magnitude.png
 tests/speedup_magnitude.json
+
+# Cluster pipeline (user/machine-specific paths, SLURM outputs)
+cluster/

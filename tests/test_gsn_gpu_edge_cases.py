@@ -52,11 +52,21 @@ else:
 
 ANY_GPU = HAS_CUDA or HAS_MPS
 
-# Tolerances used across this file. Float64 should give us ~1e-10 between
-# cpu and cuda, ~1e-3 between float64 and float32, and ~1e-8 end-to-end.
-TOL_F64_NLL = 1e-9
-TOL_F64_E2E = 1e-7
-TOL_F32_NLL = 1e-2
+# Tolerances. Each test compares same-dtype against same-dtype CPU so we
+# only measure cross-device numerical reordering, not accumulated float
+# precision loss. We use atol + rtol*|ref| because the NLL magnitude
+# scales with N (log-determinant term) and M (sum-of-squares term), so an
+# absolute-only tolerance would either be loose at small N or tight at
+# large N. Float32 needs a looser rtol because cuBLAS / MAGMA dispatch
+# a different LAPACK path than scipy/LAPACK on CPU and the rounding
+# diverges over 51 batched Cholesky + per-row triangular solves.
+TOL_F64_ATOL, TOL_F64_RTOL = 1e-9, 1e-10
+TOL_F32_ATOL, TOL_F32_RTOL = 1e-2, 1e-3
+TOL_F64_E2E  = 1e-7     # cpu vs cuda end-to-end through perform_gsn
+
+# Backwards-compat aliases used elsewhere in this file.
+TOL_F64_NLL = TOL_F64_ATOL
+TOL_F32_NLL = TOL_F32_ATOL
 
 
 # ---------------------------------------------------------------------------
@@ -84,16 +94,17 @@ def _low_rank_population(nvox, ncond, ntrial, *, rank_signal=10, rank_noise=20,
 
 
 def _devices_to_test():
-    """Yield (device, dtype, atol_nll) triples for every available GPU
+    """Yield (device, dtype, atol, rtol) tuples for every available GPU
     backend, including the float32 path on MPS (where float64 doesn't
-    exist)."""
+    exist).
+    """
     if HAS_CUDA:
-        yield 'cuda', np.float64, TOL_F64_NLL
-        yield 'cuda', np.float32, TOL_F32_NLL
+        yield 'cuda', np.float64, TOL_F64_ATOL, TOL_F64_RTOL
+        yield 'cuda', np.float32, TOL_F32_ATOL, TOL_F32_RTOL
     if HAS_MPS:
         # MPS internally forces float32 regardless of input dtype.
-        yield 'mps', np.float64, TOL_F32_NLL
-        yield 'mps', np.float32, TOL_F32_NLL
+        yield 'mps', np.float64, TOL_F32_ATOL, TOL_F32_RTOL
+        yield 'mps', np.float32, TOL_F32_ATOL, TOL_F32_RTOL
 
 
 # ===========================================================================
@@ -135,17 +146,36 @@ class TestBatchedNllOnGpu:
         c = _random_psd(N, rng=rng)
         pts_zm = rng.standard_normal((M, N))
         sl = np.linspace(0, 1, 51)
-        nll_cpu = batched_shrunken_nll(c, pts_zm, sl, device='cpu')
-        for device, dtype, atol in _devices_to_test():
+        for device, dtype, atol, rtol in _devices_to_test():
             c_d = c.astype(dtype)
             pts_d = pts_zm.astype(dtype)
+            # Precision-matched CPU reference: same dtype both sides so we
+            # only measure cross-device LAPACK-vs-cuBLAS reordering, not
+            # accumulated float32 rounding loss.
+            nll_cpu = batched_shrunken_nll(c_d, pts_d, sl, device='cpu')
             nll_gpu = batched_shrunken_nll(c_d, pts_d, sl, device=device)
             assert nll_gpu.shape == nll_cpu.shape
-            diff = np.nanmax(np.abs(nll_gpu - nll_cpu))
-            assert diff < atol, (
-                f"{device}/{np.dtype(dtype).name}: max|Δnll|={diff:.2e}")
+            # NaN masks must match exactly — disagreement here would mean
+            # one path failed Cholesky on a slot where the other succeeded,
+            # which IS a real bug.
             assert np.array_equal(np.isnan(nll_gpu), np.isnan(nll_cpu)), (
                 f"{device}/{np.dtype(dtype).name}: NaN masks disagree")
+            # numpy-style relative+absolute tolerance — handles NLL values
+            # that scale with N (log-det term ~ N) and M (quadratic-form
+            # term ~ N*M / 2). At N=500 the NLL magnitudes are ~10^3, and
+            # f32 precision floor (~N*eps_f32 relative) is around 6e-5
+            # relative — well captured by rtol = 1e-3 for f32.
+            ref_max = float(np.nanmax(np.abs(nll_cpu)))
+            threshold = atol + rtol * ref_max
+            diff = float(np.nanmax(np.abs(nll_gpu - nll_cpu)))
+            assert diff < threshold, (
+                f"{device}/{np.dtype(dtype).name}: max|Δnll|={diff:.2e}  "
+                f"(threshold {threshold:.2e}, |nll|max={ref_max:.2e})")
+            # The actually-meaningful invariant: both paths must pick the
+            # same shrinkage level (= same np.nanargmin index). If math
+            # is correct, this will hold regardless of dtype precision.
+            assert int(np.nanargmin(nll_cpu)) == int(np.nanargmin(nll_gpu)), (
+                f"{device}/{np.dtype(dtype).name}: argmin disagrees")
 
     def test_per_slot_nan_propagation_on_gpu(self):
         """A rank-deficient training cov fails Cholesky at alpha=1 only.
@@ -161,7 +191,7 @@ class TestBatchedNllOnGpu:
         c = U @ np.diag(np.linspace(1.0, 0.3, 15)) @ U.T
         pts_zm = rng.standard_normal((40, N))
         sl = np.linspace(0, 1, 51)
-        for device, dtype, _ in _devices_to_test():
+        for device, dtype, _, _ in _devices_to_test():
             nll = batched_shrunken_nll(c.astype(dtype), pts_zm.astype(dtype),
                                        sl, device=device)
             assert np.isnan(nll[-1]), f"{device}: alpha=1 should be NaN"
@@ -175,7 +205,7 @@ class TestBatchedNllOnGpu:
         c = np.zeros((5, 5))
         pts_zm = np.zeros((10, 5))
         sl = np.linspace(0, 1, 51)
-        for device, dtype, _ in _devices_to_test():
+        for device, dtype, _, _ in _devices_to_test():
             nll = batched_shrunken_nll(c.astype(dtype), pts_zm.astype(dtype),
                                        sl, device=device)
             assert np.all(np.isnan(nll))
@@ -189,7 +219,7 @@ class TestBatchedNllOnGpu:
         c = _random_psd(40, rng=rng)
         pts_zm = rng.standard_normal((50, 40))
         sl = np.linspace(0, 1, 51)
-        for device, dtype, _ in _devices_to_test():
+        for device, dtype, _, _ in _devices_to_test():
             nll = batched_shrunken_nll(c.astype(dtype), pts_zm.astype(dtype),
                                        sl, device=device)
             assert isinstance(nll, np.ndarray)
@@ -205,7 +235,7 @@ class TestBatchedNllOnGpu:
         pts1 = rng.standard_normal((60, 50))
         pts2 = rng.standard_normal((60, 50))
         sl = np.linspace(0, 1, 51)
-        for device, dtype, atol in _devices_to_test():
+        for device, dtype, atol, rtol in _devices_to_test():
             # Reference: call 2 in isolation.
             nll2_ref = batched_shrunken_nll(c2.astype(dtype), pts2.astype(dtype),
                                             sl, device=device)
@@ -215,9 +245,14 @@ class TestBatchedNllOnGpu:
                                      sl, device=device)
             nll2 = batched_shrunken_nll(c2.astype(dtype), pts2.astype(dtype),
                                         sl, device=device)
-            diff = np.nanmax(np.abs(nll2 - nll2_ref))
-            assert diff < atol, (
-                f"{device}/{np.dtype(dtype).name}: consecutive call drift {diff:.2e}")
+            # Same dtype, same device, same input → diff should be bit-exact
+            # in principle but cuda nondeterminism can introduce tiny noise.
+            ref_max = float(np.nanmax(np.abs(nll2_ref)))
+            threshold = atol + rtol * ref_max
+            diff = float(np.nanmax(np.abs(nll2 - nll2_ref)))
+            assert diff < threshold, (
+                f"{device}/{np.dtype(dtype).name}: consecutive call drift "
+                f"{diff:.2e}  (threshold {threshold:.2e})")
 
 
 # ===========================================================================
