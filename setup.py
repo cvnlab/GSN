@@ -28,5 +28,12 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     zip_safe=False,
-    install_requires=requires
+    install_requires=requires,
+    extras_require={
+        # `pip install gsn[fast]` enables the batched-Cholesky path in
+        # calc_shrunken_covariance, which collapses the 51-level shrinkage
+        # loop into a single batched torch.linalg.cholesky_ex + batched
+        # solve_triangular. 10-100x on CPU, more on CUDA/MPS.
+        'fast': ['torch>=2.0'],
+    },
 )

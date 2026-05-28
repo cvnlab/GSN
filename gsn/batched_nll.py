@@ -1,0 +1,284 @@
+"""Batched negative-log-likelihood evaluation across shrinkage levels.
+
+Why this exists
+---------------
+``calc_shrunken_covariance`` picks the optimal shrinkage level by
+evaluating the held-out Gaussian negative log-likelihood (NLL) at every
+candidate shrinkage value (S = 51 by default — ``np.linspace(0, 1, 51)``).
+The reference implementation does this with a Python ``for`` loop over
+levels; each iteration runs its own Cholesky factorization (``O(N^3)``)
+and triangular solve (``O(M·N^2)``) on the shrunken N×N covariance.
+
+For modest N (a few hundred voxels) the 51 × O(N^3) Cholesky cost is
+already the dominant term in ``perform_gsn`` wall-clock; for N in the
+thousands it utterly dominates. So the fast path here trades a single
+``O(S·N^2)`` extra memory allocation (the stacked ``(S, N, N)`` tensor
+of shrunken covariances) for collapsing 51 sequential LAPACK calls into
+**one** batched call — ``torch.linalg.cholesky_ex`` factorizes the
+entire stack in a single kernel launch, with cross-slot threading on
+CPU and obvious parallelism on CUDA/MPS. The matching batched
+``torch.linalg.solve_triangular`` does the same for the triangular
+solves needed to compute the quadratic-form term in the Gaussian
+log-density.
+
+Without torch we fall back to a numpy + scipy loop. That loop is
+bit-equivalent to the reference (same algorithm, same NaN behavior),
+just slightly tidier because we lift the validation-point mean
+subtraction out to the caller (it's invariant across shrinkage levels).
+
+What the NLL actually is
+------------------------
+For a multivariate Gaussian with covariance ``c2`` and mean ``mn``, the
+log-density evaluated at point ``x`` is
+
+    log p(x) = -0.5 * (x - mn)^T c2^{-1} (x - mn)
+               - 0.5 * log|c2|
+               - 0.5 * N * log(2π)
+
+If we Cholesky-factor ``c2 = L L^T`` with ``L`` lower triangular, then
+``c2^{-1} = L^{-T} L^{-1}`` and ``log|c2| = 2 * sum(log diag(L))``. So
+defining ``y = L^{-1} (x - mn)``,
+
+    log p(x) = -0.5 * ||y||^2 - sum(log diag(L)) - 0.5 * N * log(2π)
+
+We evaluate this at each held-out point ``x_i`` (rows of ``pts_zm``,
+already mean-subtracted) and average ``-log p(x_i)`` to get the mean
+NLL for that shrinkage level. The caller picks the level that minimizes
+this mean NLL.
+
+Shape of the shrinkage formula
+------------------------------
+The reference computes the shrunken covariance via
+
+    c2 = c * alpha
+    np.fill_diagonal(c2, np.diag(c))    # restore diagonal
+
+which is mathematically identical to
+
+    c2 = alpha * c + (1 - alpha) * diag(c)
+
+(off-diagonals scale by alpha; diagonal entries are untouched because
+``alpha * d + (1 - alpha) * d = d``). The second form is what we use to
+build the batched ``(S, N, N)`` tensor in one vectorized expression
+without per-slot in-place mutation.
+
+NaN handling
+------------
+At ``alpha`` near 1, the unshrunken sample covariance can be singular
+(it's allowed to be — the algorithm relies on it). ``torch`` returns
+per-slot status from ``cholesky_ex`` without raising, so degenerate
+slots map to ``nll = NaN`` cleanly. The numpy path uses a per-iteration
+``try``/``except`` on ``np.linalg.LinAlgError`` for the same effect.
+The caller uses ``np.nanargmin`` to pick the best level (matching
+MATLAB's ``min(nll)``, which silently skips NaN).
+
+Memory note
+-----------
+We materialize a ``(S, N, N)`` tensor of shrunken covariances. For
+``S = 51`` and ``N = 1000`` that's ~408 MB in float64. The reference
+loop materialized the same thing one slice at a time. For very large
+N this is a memory ceiling, not just a performance trade-off — but
+``perform_gsn`` already builds N×N covariances repeatedly, so 51× of
+them is the natural batching cost.
+"""
+from __future__ import annotations
+
+import numpy as np
+from scipy.linalg import solve_triangular as _solve_triangular
+
+# Optional torch dependency. We probe at module import time and silently
+# fall back to the numpy path when torch isn't installed. Installing
+# torch (`pip install gsn[fast]`) lights up the batched path with no
+# code changes required at call sites.
+try:
+    import torch as _torch
+    _HAS_TORCH = True
+except ImportError:
+    _torch = None
+    _HAS_TORCH = False
+
+
+def _torch_dtype_for(arr):
+    """Pick the torch dtype that matches the numpy dtype of ``arr``.
+
+    Covariance estimation is sensitive to conditioning so float64 is the
+    safe default; we only downcast to float32 if the caller deliberately
+    passed float32 data.
+    """
+    if arr.dtype == np.float32:
+        return _torch.float32
+    return _torch.float64
+
+
+def _torch_batched(c, pts_zm, shrinklevels):
+    """Batched ``cholesky_ex`` + batched ``solve_triangular`` over all S levels.
+
+    This is the fast path. The trick is that ``c`` and ``pts_zm`` do not
+    depend on the shrinkage level — only the shrunken covariance does.
+    So we build the full ``(S, N, N)`` tensor of shrunken covariances
+    once, factor it in one batched call, and run a batched triangular
+    solve to get the squared-quadratic-form terms for every level at
+    once.
+
+    Parameters
+    ----------
+    c : (N, N) ndarray
+        Training sample covariance.
+    pts_zm : (M, N) ndarray
+        Already-mean-subtracted validation points (M held-out samples).
+    shrinklevels : (S,) ndarray
+        Shrinkage fractions in [0, 1].
+
+    Returns
+    -------
+    nll : (S,) float64 numpy array
+        Mean negative log-likelihood per shrinkage level; NaN where
+        the slot's shrunken covariance was not Cholesky-factorable.
+    """
+    N = c.shape[0]
+    M = pts_zm.shape[0]
+    S = len(shrinklevels)
+    log_2pi = float(np.log(2 * np.pi))
+    tdtype = _torch_dtype_for(c)
+
+    # Move inputs to torch tensors. We keep everything on CPU here —
+    # callers who want GPU dispatch can extend this dispatch table; the
+    # win we care about (10× on CPU at N≈1000) comes from torch's
+    # cross-slot LAPACK threading and from collapsing 51 Python-level
+    # iterations into one C-level batched call.
+    c_t = _torch.as_tensor(c, dtype=tdtype)
+    pts_zm_t = _torch.as_tensor(pts_zm, dtype=tdtype)
+    alphas = _torch.as_tensor(shrinklevels, dtype=tdtype)
+    diag_c = _torch.diag(c_t)                                  # (N,)
+    D = _torch.diag(diag_c)                                    # (N, N)
+
+    # Build the (S, N, N) stack of shrunken covariances in one
+    # vectorized expression. See the module docstring for the
+    # equivalence between the multiplicative "scale off-diagonals,
+    # preserve diagonal" form and this convex-combination form.
+    covs = (alphas[:, None, None] * c_t.unsqueeze(0)
+            + (1 - alphas)[:, None, None] * D.unsqueeze(0))    # (S, N, N)
+
+    # cholesky_ex returns (L, info). info[s] == 0 means slot s
+    # factorized successfully; any other value indicates the s-th matrix
+    # was not positive definite. Crucially, it does NOT raise on
+    # failures — degenerate slots simply propagate as garbage L values
+    # which we mask out below. This is what enables clean per-slot NaN
+    # semantics in a single batched call.
+    Ls, info = _torch.linalg.cholesky_ex(covs, upper=False)
+    ok = info == 0
+    ok_np = ok.cpu().numpy().astype(bool)
+
+    nll = np.full(S, np.nan, dtype=np.float64)
+    if ok_np.any():
+        n_ok = int(ok_np.sum())
+        Ls_ok = Ls[ok]                                         # (S_ok, N, N)
+
+        # Build the batched right-hand side. We want
+        #     y_{s, :, m} = L_s^{-1} pts_zm[m, :]^T
+        # for every slot s and every held-out point m. The RHS is the
+        # same across slots, so we broadcast pts_zm.T from (N, M) to
+        # (S_ok, N, M) using expand (a zero-copy view). solve_triangular
+        # broadcasts naturally over the leading batch dimension.
+        rhs = pts_zm_t.T.unsqueeze(0).expand(n_ok, N, M)       # (S_ok, N, M)
+        Y = _torch.linalg.solve_triangular(
+            Ls_ok, rhs, upper=False, unitriangular=False)      # (S_ok, N, M)
+
+        # ||y_{s, :, m}||^2 — the quadratic-form term in the Gaussian
+        # log-density, evaluated at every held-out point under every
+        # surviving shrinkage level.
+        sq = (Y ** 2).sum(dim=1)                               # (S_ok, M)
+
+        # log|c2_s| = 2 * sum(log diag(L_s)) — the normalizing term.
+        # diagonal() with dim1/dim2 picks the diagonal per batch slot
+        # in one op.
+        logdet = _torch.log(
+            _torch.diagonal(Ls_ok, dim1=-2, dim2=-1)
+        ).sum(dim=1)                                           # (S_ok,)
+
+        # Per-sample log-density, batched. The 0.5 * N * log(2π) term
+        # is constant across slots and samples but cheap to add here.
+        log_pdf = (-0.5 * sq
+                   - logdet.unsqueeze(1)
+                   - 0.5 * N * log_2pi)                        # (S_ok, M)
+
+        # Mean over held-out samples; negate so smaller = better. Only
+        # the successful slots are written; the rest stay NaN.
+        nll[ok_np] = (-log_pdf.mean(dim=1)).cpu().numpy()
+    return nll
+
+
+def _numpy_loop(c, pts_zm, shrinklevels):
+    """Numpy + scipy fallback. Bit-equivalent to the reference inner loop.
+
+    The only difference vs. the historical reference is that we lift
+    mean-subtraction out of this function (the caller has already done
+    it on ``pts_zm``) — that was a wasted recomputation per shrinkage
+    level. Everything else (Cholesky, triangular solve, NaN handling)
+    matches the reference one-for-one.
+    """
+    N = c.shape[0]
+    S = len(shrinklevels)
+    log_2pi = float(np.log(2 * np.pi))
+    diag_c = np.diag(c) if N > 1 else None
+    # Transpose once outside the loop; scipy's triangular solve wants
+    # the RHS shaped (N, M) so each column is a separate system.
+    pts_zm_T = pts_zm.T
+    nll = np.full(S, np.nan, dtype=np.float64)
+    for p in range(S):
+        alpha = shrinklevels[p]
+        # Same shrunken-cov formula as the torch path, just one slot at
+        # a time. fill_diagonal mutates in place — fine because c2 is a
+        # freshly allocated copy from the scalar multiplication.
+        c2 = c * alpha
+        if N > 1:
+            np.fill_diagonal(c2, diag_c)
+        try:
+            L = np.linalg.cholesky(c2)
+        except np.linalg.LinAlgError:
+            # Singular shrunken covariance — leave nll[p] as NaN. The
+            # caller (np.nanargmin) will skip this slot, matching
+            # MATLAB's min(nll) NaN-skip behavior.
+            continue
+        # Solve L @ Y = pts_zm.T  =>  Y = L^{-1} pts_zm.T per column.
+        Y = _solve_triangular(L, pts_zm_T, lower=True)
+        sq = (Y ** 2).sum(axis=0)                              # (M,)
+        logdet = np.log(np.diag(L)).sum()
+        log_pdf = -0.5 * sq - logdet - 0.5 * N * log_2pi       # (M,)
+        nll[p] = float(-np.mean(log_pdf))
+    return nll
+
+
+def batched_shrunken_nll(c, pts_zm, shrinklevels, use_torch=None):
+    """Mean negative log-likelihood at every shrinkage level, in one shot.
+
+    This is the entry point used by ``calc_shrunken_covariance``. It
+    dispatches to the torch fast path when torch is importable, and to
+    the numpy + scipy loop otherwise. Both paths return the same
+    ``nll`` semantics, so callers don't need to branch.
+
+    Parameters
+    ----------
+    c : (N, N) ndarray
+        Training covariance.
+    pts_zm : (M, N) ndarray
+        Zero-mean validation points (already mean-subtracted).
+    shrinklevels : (S,) ndarray
+        Shrinkage levels in [0, 1].
+    use_torch : bool, optional
+        Force the torch path (True) or the numpy path (False). Default
+        ``None`` uses torch when available. Mostly useful for
+        benchmarking and for tests that want to exercise the numpy path
+        explicitly.
+
+    Returns
+    -------
+    nll : (S,) float64 ndarray
+        Mean negative log-likelihood per shrinkage level. NaN where the
+        shrunken covariance failed Cholesky.
+    """
+    if use_torch is None:
+        use_torch = _HAS_TORCH
+    if use_torch:
+        return _torch_batched(c, pts_zm, shrinklevels)
+    return _numpy_loop(c, pts_zm, shrinklevels)

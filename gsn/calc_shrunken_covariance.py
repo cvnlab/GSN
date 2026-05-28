@@ -1,7 +1,7 @@
 import numpy as np
 import warnings
 from gsn.utilities import squish, deterministic_randperm
-from gsn.calc_mv_gaussian_pdf import calc_mv_gaussian_pdf
+from gsn.batched_nll import batched_shrunken_nll
 
 def calc_shrunken_covariance(data, 
                            leaveout = 5, 
@@ -173,63 +173,31 @@ def calc_shrunken_covariance(data,
         # calculate the mean from the training data (1 x variables)
         mn = np.mean(data[iinot],0)
             
-    # try different shrinkage levels
-    nll = np.zeros((len(shrinklevels),), type(data.reshape(-1)[0])) # mean negative log likelihood
-    covs = np.zeros((c.shape[0], c.shape[1], len(shrinklevels)), type(data.reshape(-1)[0])) # various covariance matrices
-    
-    for p in range(len(shrinklevels)):
-        
-        # shrink the covariance (off-diagonal elements mix with 0)
-        c2 = c * shrinklevels[p]
-        if c.shape[0] > 1:
-            np.fill_diagonal(c2, np.diag(c)) # preserve the diagonal elements
-        # For single variable case, c2 is already correct (it's just the variance)
-        
-        # record
-        covs[:,:,p] = c2
-
-        # evaluate the PDF on the validation data, obtaining log likelihoods
-        if np.ndim(data) == 3:
-
-            # handle the regular case of all valid trials
-            if not isuneven:
-                data_zeromean = data[:,:,ii] - np.mean(data[:,:,ii],0)
-                data_zeromean = squish(np.transpose(data_zeromean, (0,2,1)), 2)   
-                
-                [pr,err] = calc_mv_gaussian_pdf(pts = data_zeromean, 
-                                                 mn = mn, 
-                                                 c = c2,  # shrunken covariance 
-                                                 wantomitexp = 1)
-
-            # handle very tricky case
-            else:
-                datastore = np.array([], dtype=data.dtype).reshape(0, data.shape[1])  # observations x variables
-                for q in range(len(ii)):
-                    temp = data[:,:,ii[q]]  # observations x variables
-                    validix = ~np.any(np.isnan(temp), axis=1)  # observations x 1 indicating valid data
-                    if np.sum(validix) > 1:  # if we have at least two, let's use for the likelihood
-                        valid_temp = temp[validix,:]
-                        temp_zeromean = valid_temp - np.mean(valid_temp, axis=0)
-                        datastore = np.vstack([datastore, temp_zeromean])
-                assert datastore.size > 0, 'validation data did not have any conditions with at least two observations'
-                [pr,err] = calc_mv_gaussian_pdf(pts = datastore, 
-                                                 mn = mn, 
-                                                 c = c2,  # shrunken covariance 
-                                                 wantomitexp = 1)
-            
+    # Build zero-mean validation points once (invariant across shrinkage
+    # levels) and let batched_shrunken_nll evaluate the held-out Gaussian
+    # likelihood at every level in one shot. With torch installed this
+    # uses a single batched cholesky_ex + batched solve_triangular over
+    # the (S, N, N) shrunken-cov stack; without torch it falls back to a
+    # numpy + scipy loop bit-equivalent to the original.
+    if np.ndim(data) == 3:
+        if not isuneven:
+            data_zeromean = data[:,:,ii] - np.mean(data[:,:,ii], 0)
+            pts_zm = squish(np.transpose(data_zeromean, (0,2,1)), 2)
         else:
-            
-            [pr,err] = calc_mv_gaussian_pdf(pts = data[ii], 
-                                             mn = mn, 
-                                             c = c2,  # shrunken covariance 
-                                             wantomitexp = 1) 
+            datastore = np.array([], dtype=data.dtype).reshape(0, data.shape[1])
+            for q in range(len(ii)):
+                temp = data[:,:,ii[q]]
+                validix = ~np.any(np.isnan(temp), axis=1)
+                if np.sum(validix) > 1:
+                    valid_temp = temp[validix,:]
+                    temp_zeromean = valid_temp - np.mean(valid_temp, axis=0)
+                    datastore = np.vstack([datastore, temp_zeromean])
+            assert datastore.size > 0, 'validation data did not have any conditions with at least two observations'
+            pts_zm = datastore
+    else:
+        pts_zm = data[ii] - mn
 
-        if err:
-            nll[p] = np.nan
-            continue
-        
-        # calculate mean negative log likelihood (lower values mean higher probabilities)
-        nll[p] = np.mean(-pr)
+    nll = batched_shrunken_nll(c, pts_zm, shrinklevels)
     
     # which achieves the minimum?
     # Use nanargmin (not argmin) to ignore shrinkage levels whose shrunken
@@ -317,8 +285,14 @@ def calc_shrunken_covariance(data,
         # For single variable case, c2 is already correct (it's just the variance)
         c = c2
               
-    # otherwise we just extract the desired shrunken estimate
+    # otherwise we just apply the chosen shrinkage to the training cov.
+    # (The reference stored all 51 shrunken covs in a (N, N, S) array and
+    # indexed in; we now recompute the chosen one on demand to avoid the
+    # 51x memory blowup at large N.)
     else:
-        c = covs[:,:,min0ix]
+        c2 = c * shrinklevel
+        if c.shape[0] > 1:
+            np.fill_diagonal(c2, np.diag(c))
+        c = c2
         
     return mn, c, shrinklevel, nll
