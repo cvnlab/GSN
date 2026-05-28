@@ -151,19 +151,21 @@ def _resolve_device(device):
 def _pick_chunk_size(N, M, S, dtype, device, mem_budget_gb=None):
     """Largest shrinkage-level chunk that fits the (chunk, N, N) working set.
 
-    The peak GPU memory we have to allocate when evaluating one chunk of
-    shrinkage levels at a time is dominated by three tensors:
+    The peak working-set memory while evaluating one chunk of shrinkage
+    levels is dominated by three tensors:
 
       - ``covs[chunk]``:  chunk * N²  (the stacked shrunken covariances)
       - ``Ls[chunk]``:    chunk * N²  (the Cholesky factors)
       - ``Y[chunk]``:     chunk * N * M  (the triangular-solve RHS)
 
-    so total ≈ chunk * (2N² + N*M) * dtype-bytes. We size the chunk so
-    that fits under ~70 % of the device's currently-free memory, leaving
-    headroom for PyTorch's allocator overhead and for caller tensors
-    (cSb, cNb, …) that live outside this function. For N ≤ ~3000 the
-    full S=51 stack typically fits and we return S unchanged; for larger
-    N or smaller-memory devices we drop to smaller chunks transparently.
+    Total ≈ chunk * (2N² + N*M) * dtype-bytes. Strategy: use ~95% of
+    currently-free device memory so chunking only kicks in when the
+    single-pass S=51 stack truly wouldn't fit. The remaining 5% covers
+    PyTorch allocator fragmentation; caller tensors (c_t, D, cSb, …)
+    are small enough at our N range (~1.6 GB at N=10000 f64) that the
+    budget can stay tight. At N ≤ ~10000 f64 this leaves chunk = S
+    (single-pass behavior identical to pre-chunking); chunking kicks
+    in around N ≳ 12000 f64 on an H100 with mostly-free memory.
     """
     bytes_per = 4 if dtype == _torch.float32 else 8
     per_slot_bytes = (2 * N * N + N * M) * bytes_per
@@ -173,12 +175,16 @@ def _pick_chunk_size(N, M, S, dtype, device, mem_budget_gb=None):
         if dev_str.startswith('cuda'):
             try:
                 free, _total = _torch.cuda.mem_get_info(device)
-                # 70 % of free memory; the other 30 % covers caller-side
-                # tensors and torch allocator fragmentation.
-                mem_budget_gb = (free * 0.7) / (1024 ** 3)
+                # 95 % of free memory; the other 5 % covers torch's
+                # caching-allocator fragmentation. We rely on the fact
+                # that caller-side tensors (c, D, pts_zm, cSb, …) are
+                # ≪ 5 GB at our typical N, so they fit inside the
+                # remainder without contention.
+                mem_budget_gb = (free * 0.95) / (1024 ** 3)
             except Exception:
-                # ~30 GB is a safe budget on H100 80GB with caller tensors.
-                mem_budget_gb = 30.0
+                # Safe default if mem_get_info is unavailable: assume
+                # H100 80GB with ~10 GB of headroom already consumed.
+                mem_budget_gb = 60.0
         elif dev_str == 'mps':
             # MPS shares unified memory with the host; be conservative.
             mem_budget_gb = 8.0
