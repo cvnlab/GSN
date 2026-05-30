@@ -126,7 +126,10 @@ def time_python(data, method, repeats):
     """
     force_numpy = (method == 'numpy')
     device = 'cpu' if force_numpy else method
-    opt = {'wantverbose': 0, 'device': device}
+    # Match the legacy main reference so the cross-backend wall-clock is
+    # apples-to-apples; the default 'returns' adds three eighs that the
+    # reference doesn't do.
+    opt = {'wantverbose': 0, 'device': device, 'returns': ['cSb', 'cNb']}
     saved = bn._HAS_TORCH
     if force_numpy:
         bn._HAS_TORCH = False

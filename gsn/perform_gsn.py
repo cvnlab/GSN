@@ -16,6 +16,15 @@ def perform_gsn(data, opt=None):
             availability). 'cpu' is the right choice up to N ≈ 1000 voxels because
             GPU host↔device transfer dominates below that; 'cuda' / 'mps' open up
             the GPU path for larger N. Requires torch (`pip install gsn[fast]`).
+        returns (iterable of str, optional): Which of the four (N x N)
+            covariance matrices to include in the result dict. Default
+            ``('cN', 'cS', 'cNb', 'cSb')`` — the four matrices the
+            legacy perform_gsn always returned. Pass an iterable like
+            ``['cSb', 'cNb']`` if you don't need cN / cS and want to
+            save host memory at large N. Valid names: ``'cN', 'cS',
+            'cNb', 'cSb'``. Downstream consumers (e.g. PSN) compute
+            eigenbases / Wiener filters / difference matrices from cSb
+            and cNb on the machine where they're consumed.
 
     Regarding uneven number of trials across conditions:
     - It is acceptable that different conditions may have different numbers
@@ -44,23 +53,28 @@ def perform_gsn(data, opt=None):
         that were actually used for noise covariance estimation.)
 
     Returns:
-    results: A dictionary with the results containing:
+    results: A dictionary with the results.
+
+    Always present (cheap; no opt-in needed):
         mnN - the estimated mean of the noise (1 x voxels)
-        cN - the raw estimated covariance of the noise (voxels x voxels)
-        cNb - the final estimated covariance after biconvex optimization
-        shrinklevelN - shrinkage level chosen for cN
-        shrinklevelD - shrinkage level chosen for the estimated data covariance
         mnS - the estimated mean of the signal (1 x voxels)
-        cS - the raw estimated covariance of the signal (voxels x voxels)
-        cSb - the final estimated covariance after biconvex optimization
         ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
                 This is, for each voxel, the std dev of the estimated signal
                 distribution divided by the std dev of the estimated noise
                 distribution. Note that this is computed on the raw
                 estimated covariances. Also, note that we apply positive
                 rectification (to prevent non-sensical negative ncsnr values).
+        shrinklevelN - shrinkage level chosen for cN
+        shrinklevelD - shrinkage level chosen for the estimated data covariance
         numiters - the number of iterations used in the biconvex optimization.
                 0 means the first estimate was already positive semi-definite.
+
+    Present iff named in ``opt['returns']`` (see above for the default set
+    and how to override):
+        cN  - raw estimated covariance of the noise (voxels x voxels)
+        cS  - raw estimated covariance of the signal (voxels x voxels)
+        cNb - noise covariance after biconvex optimization (voxels x voxels)
+        cSb - signal covariance after biconvex optimization (voxels x voxels)
 
     History:
     - 2025/07/15 - add support for uneven number of trials
@@ -76,8 +90,10 @@ def perform_gsn(data, opt=None):
     results = perform_gsn(data)
     """
 
-    # Defaults — fast_perform_gsn fills in the rest. We honor None as
-    # "use default" for backwards compatibility with the previous wrapper.
+    # Backwards-compat defaults. fast_perform_gsn's DEFAULT_RETURNS is
+    # the legacy ('cN', 'cS', 'cNb', 'cSb') set so we don't need to
+    # inject 'returns' here — passing opt straight through gives the
+    # same result whether the caller omitted it or set it explicitly.
     if opt is None:
         opt = {}
     if 'wantverbose' not in opt or opt['wantverbose'] is None:

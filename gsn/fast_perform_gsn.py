@@ -58,14 +58,53 @@ else:
 # Delegation to the old rsa_noise_ceiling path (for NaN / uneven trials)
 # ---------------------------------------------------------------------------
 
+# Output selection ---------------------------------------------------------
+#
+# A caller picks which of the four cov matrices they actually need via
+# opt['returns']. Default matches the legacy perform_gsn output (all
+# four). The cheap items below are always returned regardless:
+#
+#     mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters
+#
+# Eigendecompositions / Wiener filters / etc. are NOT part of GSN's
+# output — downstream consumers (e.g. PSN) compute those from cSb / cNb
+# on the machine where they're consumed, which is the right place to
+# decide rank / precision / etc.
+
+_VALID_RETURNS = ('cN', 'cS', 'cNb', 'cSb')
+DEFAULT_RETURNS = ('cN', 'cS', 'cNb', 'cSb')
+
+
+def _normalize_returns(value):
+    """Validate the opt['returns'] selector and return it as a set.
+
+    None  → the default (cSb, cNb, cdiff, three eigenbases).
+    str   → single-item set.
+    iter  → all items must be names from _VALID_RETURNS.
+    """
+    if value is None:
+        return set(DEFAULT_RETURNS)
+    if isinstance(value, str):
+        value = (value,)
+    s = set(value)
+    bad = s - set(_VALID_RETURNS)
+    if bad:
+        raise ValueError(
+            f"opt['returns'] contains unknown items {sorted(bad)}; "
+            f"valid names are {sorted(_VALID_RETURNS)}")
+    return s
+
+
 def _delegate_uneven(data, opt):
     """Fall back to rsa_noise_ceiling mode=1 for uneven-trials data.
 
     That code path has multi-step stochastic trial-subsetting and a
     careful NaN handling story that's not worth rewriting here. The
-    returned dict has the same shape as the fast path's.
+    returned dict honors opt['returns'] by dropping cov matrices the
+    caller didn't ask for.
     """
     from gsn.rsa_noise_ceiling import rsa_noise_ceiling
+    returns = _normalize_returns(opt.get('returns'))
     opt = dict(opt)
     opt.setdefault('wantverbose', 0)
     opt.setdefault('wantshrinkage', 1)
@@ -77,6 +116,12 @@ def _delegate_uneven(data, opt):
     result = rsa_noise_ceiling(data, opt)[2]
     result.pop('sc', None)
     result.pop('splitr', None)
+
+    # rsa_noise_ceiling always returns all four cov matrices; drop the
+    # ones the caller didn't ask for.
+    for k in _VALID_RETURNS:
+        if k not in returns and k in result:
+            del result[k]
     return result
 
 
@@ -218,6 +263,7 @@ def _run_numpy(data_np, opt) -> Dict[str, Any]:
     _, ncond, ntrial = data_np.shape
     shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
                     else np.array([1.0]))
+    returns = _normalize_returns(opt.get('returns'))
 
     # Noise cov: (obs=ntrial, var=nvox, case=ncond)
     data_noise_3d = np.transpose(data_np, (2, 0, 1))
@@ -235,11 +281,30 @@ def _run_numpy(data_np, opt) -> Dict[str, Any]:
                       out=np.zeros_like(sd_signal), where=sd_noise != 0)
     cSb, cNb, numiters = _biconvex_numpy(cN, cD, cS, ncond, ntrial)
 
-    return {
-        'mnN': mnN, 'cN': cN, 'cNb': cNb, 'shrinklevelN': shrinklevelN,
-        'mnS': mnS, 'cS': cS, 'cSb': cSb, 'shrinklevelD': shrinklevelD,
+    return _assemble_result_numpy(
+        returns, mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters,
+        cN, cS, cNb, cSb)
+
+
+def _assemble_result_numpy(returns, mnN, mnS, ncsnr,
+                           shrinklevelN, shrinklevelD, numiters,
+                           cN, cS, cNb, cSb):
+    """Build the public result dict honoring ``returns``.
+
+    Cheap items are always present; cov matrices are included only when
+    named in ``returns`` so callers who don't need all four can save
+    the corresponding memory.
+    """
+    result: Dict[str, Any] = {
+        'mnN': mnN, 'shrinklevelN': shrinklevelN,
+        'mnS': mnS, 'shrinklevelD': shrinklevelD,
         'ncsnr': ncsnr, 'numiters': numiters,
     }
+    if 'cN'  in returns: result['cN']  = cN
+    if 'cS'  in returns: result['cS']  = cS
+    if 'cNb' in returns: result['cNb'] = cNb
+    if 'cSb' in returns: result['cSb'] = cSb
+    return result
 
 
 # ===========================================================================
@@ -253,31 +318,46 @@ def _shrunken_cov_3d_torch(data_3d, leaveout, shrinklevels_np, device):
     ii = torch.from_numpy(perm[:val_size].copy()).to(device)
     iinot = torch.from_numpy(perm[val_size:].copy()).to(device)
 
+    # Training pooled cov via einsum. We materialize train/centered_train
+    # only briefly; once c is computed we drop them so the (var, var) cov
+    # is the only large tensor surviving into the NLL eval.
     train = data_3d.index_select(2, iinot)
     centered_train = train - train.mean(dim=0, keepdim=True)
+    del train
     c = (torch.einsum('ovc,owc->vw', centered_train, centered_train)
-         / (obs - 1) / train.shape[2])
+         / (obs - 1) / centered_train.shape[2])
+    del centered_train
 
+    # Same for validation: build pts_zm, then free val / centered_val.
     val = data_3d.index_select(2, ii)
     centered_val = val - val.mean(dim=0, keepdim=True)
+    del val
     pts_zm = centered_val.permute(2, 0, 1).reshape(-1, var)
+    del centered_val
 
     nll = _torch_batched(c, pts_zm, shrinklevels_np, device=device)
+    del pts_zm
     if np.all(np.isnan(nll)):
         warnings.warn('All covariance matrices were singular.')
         best = 0
     else:
         best = int(np.nanargmin(nll))
     chosen_level = float(shrinklevels_np[best])
+    del c
 
+    # Full-data refit (wantfull=1). Same del-on-last-use pattern.
     centered_full = data_3d - data_3d.mean(dim=0, keepdim=True)
     c_full = (torch.einsum('ovc,owc->vw', centered_full, centered_full)
               / (obs - 1) / ncase)
-    diag_full = torch.diag(c_full)
-    D_full = torch.diag(diag_full)
-    c_final = chosen_level * c_full + (1 - chosen_level) * D_full
+    del centered_full
+    # Shrink in place: c_final = alpha*c_full + (1-alpha)*diag(c_full)
+    #                = alpha*c_full with diagonal restored.
+    diag_full = torch.diagonal(c_full).clone()
+    c_full.mul_(chosen_level)
+    idx = torch.arange(var, device=device)
+    c_full[idx, idx] = diag_full
     mn = torch.zeros((1, var), dtype=data_3d.dtype, device=device)
-    return mn, c_final, chosen_level
+    return mn, c_full, chosen_level
 
 
 def _shrunken_cov_2d_torch(data_2d, leaveout, shrinklevels_np, device):
@@ -310,55 +390,134 @@ def _shrunken_cov_2d_torch(data_2d, leaveout, shrinklevels_np, device):
 
 
 def _nearest_psd_torch(M, eps=1e-10):
-    M = (M + M.transpose(-1, -2)) / 2
+    """Nearest-PSD projection via eigh with clamping. Preserves the
+    same math as MATLAB's construct_nearest_psd_covariance
+    (V * max(D, 0) * V').
+
+    f32 → f64 upcast for the eigh (cuSOLVER syevd is unreliable on
+    near-singular f32 inputs). Falls back to scipy.linalg.eigh on the
+    host if the device eigh raises — common at very large N where
+    cuSOLVER syevd hits its workspace limit.
+    """
+    M = (M + M.transpose(-1, -2)).mul_(0.5)
     try:
         torch.linalg.cholesky(M)
         return M
     except Exception:
         pass
-    d, v = torch.linalg.eigh(M)
+
+    in_dtype = M.dtype
+    orig_device = M.device
+    N = M.shape[-1]
+
+    if in_dtype == torch.float32:
+        M_eig = M.to(torch.float64)
+        del M
+    else:
+        M_eig = M
+
+    try:
+        d, v = torch.linalg.eigh(M_eig)
+    except (torch.OutOfMemoryError, RuntimeError) as err:
+        warnings.warn(
+            f'_nearest_psd_torch: device eigh failed '
+            f'({type(err).__name__}); falling back to scipy CPU eigh.')
+        import scipy.linalg as _scilin
+        M_np = M_eig.cpu().numpy()
+        if str(orig_device).startswith('cuda'):
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        d_np, v_np = _scilin.eigh(M_np, driver='evr')
+        del M_np
+        d = torch.from_numpy(d_np).to(orig_device)
+        v = torch.from_numpy(v_np).to(orig_device)
+        del d_np, v_np
+    del M_eig
+
     d = torch.clamp(d, min=0)
     Mp = (v * d) @ v.transpose(-1, -2)
-    Mp = (Mp + Mp.transpose(-1, -2)) / 2
+    del v, d
+    if Mp.dtype != in_dtype:
+        Mp = Mp.to(in_dtype)
+    Mp = (Mp + Mp.transpose(-1, -2)).mul_(0.5)
     try:
         torch.linalg.cholesky(Mp)
     except Exception:
-        Mp = Mp + eps * torch.eye(Mp.shape[0], device=Mp.device, dtype=Mp.dtype)
+        Mp = Mp + eps * torch.eye(N, device=Mp.device, dtype=Mp.dtype)
     return Mp
 
 
-def _biconvex_torch(cN, cD, cS, ncond, ntrial, max_iters=100):
-    """Biconvex loop on device. Convergence uses torch.corrcoef so we
-    match the numpy path's stopping criterion bit-for-bit (modulo
-    floating-point reordering)."""
+def _flat_pearson(a, b):
+    """Pearson correlation between flattened a and b. Uses element-wise
+    mul + reduce-sum with f64 accumulators rather than torch.dot, since
+    cuBLAS/MKL dot kernels cap their length at int32 (~2.1e9 elements);
+    element-wise ops use int64 strides and have no such cap."""
+    a = a.reshape(-1)
+    b = b.reshape(-1)
+    n = a.numel()
+    use_f64_accum = a.dtype == torch.float32
+    accum_kw = {'dtype': torch.float64} if use_f64_accum else {}
+    sum_a = a.sum(**accum_kw)
+    sum_b = b.sum(**accum_kw)
+    sum_ab = (a * b).sum(**accum_kw)
+    sum_aa = (a * a).sum(**accum_kw)
+    sum_bb = (b * b).sum(**accum_kw)
+    ma = sum_a / n
+    mb = sum_b / n
+    num = sum_ab - n * ma * mb
+    var_a = sum_aa - n * ma * ma
+    var_b = sum_bb - n * mb * mb
+    return float((num / torch.sqrt(var_a * var_b)).item())
+
+
+def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100):
+    """Biconvex loop on device. Convergence uses pearson correlation of
+    the flattened cov matrices, matching the numpy path's criterion
+    (modulo floating-point reordering).
+
+    cSb_old at iter 0 is derived inline as cD - cN/ntrial; we never
+    materialize a separate cS device tensor, which saves one full-size
+    buffer of headroom throughout biconvex.
+    """
     cNb = cN
-    cSb_old = cS
+    cSb_old = cD.clone().sub_(cN, alpha=1.0 / ntrial)
     cNb_old = cN
     numiters = 0
+    coef_N = ((ncond * (ntrial - 1) * ntrial ** 2)
+              / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
+    coef_D = ((ncond - 1)
+              / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
     for _ in range(max_iters):
-        cSb = _nearest_psd_torch(cD - cNb / ntrial)
-        coef_N = ((ncond * (ntrial - 1) * ntrial ** 2)
-                  / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
-        coef_D = ((ncond - 1)
-                  / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
-        cNb = _nearest_psd_torch(coef_N * cN + coef_D * ntrial * (cD - cSb))
+        cSb = _nearest_psd_torch(
+            cD.clone().sub_(cNb, alpha=1.0 / ntrial))
         if cSb.shape[0] == 1:
-            converged = (torch.abs(cSb_old - cSb).item() < 1e-5
-                         and torch.abs(cNb_old - cNb).item() < 1e-5)
+            r_S_ok = torch.abs(cSb_old - cSb).item() < 1e-5
         else:
-            # torch.corrcoef expects each row to be a variable; we want
-            # the pearson correlation of two flat N²-vectors. Stack them
-            # as 2 rows.
-            stack_S = torch.stack([cSb_old.flatten(), cSb.flatten()])
-            stack_N = torch.stack([cNb_old.flatten(), cNb.flatten()])
-            r_S = float(torch.corrcoef(stack_S)[0, 1].item())
-            r_N = float(torch.corrcoef(stack_N)[0, 1].item())
-            converged = r_S > 0.999 and r_N > 0.999
-        if converged:
+            r_S_ok = _flat_pearson(cSb_old, cSb) > 0.999
+        del cSb_old
+
+        cNb = _nearest_psd_torch(
+            (cN * coef_N)
+            .add_(cD, alpha=coef_D * ntrial)
+            .sub_(cSb, alpha=coef_D * ntrial))
+        if cNb.shape[0] == 1:
+            r_N_ok = torch.abs(cNb_old - cNb).item() < 1e-5
+        else:
+            r_N_ok = _flat_pearson(cNb_old, cNb) > 0.999
+        del cNb_old
+
+        if r_S_ok and r_N_ok:
             break
         numiters += 1
         cSb_old = cSb
         cNb_old = cNb
+        if str(cN.device).startswith('cuda'):
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
     return cSb, cNb, numiters
 
 
@@ -367,40 +526,69 @@ def _run_torch(data_np, opt, device) -> Dict[str, Any]:
     _, ncond, ntrial = data_np.shape
     shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
                     else np.array([1.0]))
+    returns = _normalize_returns(opt.get('returns'))
+
 
     data = torch.as_tensor(data_np, dtype=dtype, device=device)
 
-    # Noise cov: (obs=ntrial, var=nvox, case=ncond)
+    # Noise cov: (obs=ntrial, var=nvox, case=ncond). Free intermediate
+    # data tensors as soon as their cov is built so they don't survive
+    # across the (much larger) biconvex working set.
     data_noise_3d = data.permute(2, 0, 1).contiguous()
     mnN, cN, shrinklevelN = _shrunken_cov_3d_torch(
         data_noise_3d, 5, shrinklevels, device)
+    del data_noise_3d
 
     data_2d = data.mean(dim=2).T.contiguous()
+    del data
     mnD, cD, shrinklevelD = _shrunken_cov_2d_torch(
         data_2d, 5, shrinklevels, device)
+    del data_2d
 
     mnS = mnD - mnN
-    cS = cD - cN / ntrial
+    # ncsnr only needs the diagonal of cS = cD - cN/ntrial, not the
+    # full matrix. Keeping just the diagonal here avoids a full-size
+    # cS tensor surviving into biconvex.
+    diag_cS = torch.diagonal(cD) - torch.diagonal(cN) / ntrial
     sd_noise = torch.sqrt(torch.clamp(torch.diag(cN), min=0))
-    sd_signal = torch.sqrt(torch.clamp(torch.diag(cS), min=0))
+    sd_signal = torch.sqrt(torch.clamp(diag_cS, min=0))
     ncsnr = torch.where(
         sd_noise > 0, sd_signal / sd_noise,
         torch.zeros_like(sd_signal))
+    del sd_noise, sd_signal, diag_cS
 
-    cSb, cNb, numiters = _biconvex_torch(cN, cD, cS, ncond, ntrial)
+    if str(device).startswith('cuda'):
+        torch.cuda.empty_cache()
 
-    return {
+    # Snapshot the requested cN/cS to host BEFORE biconvex. cS is built
+    # only for the host snapshot (if requested) and freed before
+    # biconvex starts; biconvex derives its iter-0 anchor internally.
+    result: Dict[str, Any] = {
         'mnN': mnN.cpu().numpy(),
-        'cN': cN.cpu().numpy(),
-        'cNb': cNb.cpu().numpy(),
         'shrinklevelN': shrinklevelN,
         'mnS': mnS.cpu().numpy(),
-        'cS': cS.cpu().numpy(),
-        'cSb': cSb.cpu().numpy(),
         'shrinklevelD': shrinklevelD,
         'ncsnr': ncsnr.cpu().numpy(),
-        'numiters': numiters,
     }
+    if 'cN' in returns: result['cN'] = cN.cpu().numpy()
+    if 'cS' in returns:
+        cS_tmp = cD - cN / ntrial
+        result['cS'] = cS_tmp.cpu().numpy()
+        del cS_tmp
+        if str(device).startswith('cuda'):
+            torch.cuda.empty_cache()
+
+    cSb, cNb, numiters = _biconvex_torch(cN, cD, ncond, ntrial)
+    result['numiters'] = numiters
+    del cN, cD
+
+    if 'cNb' in returns: result['cNb'] = cNb.cpu().numpy()
+    if 'cSb' in returns: result['cSb'] = cSb.cpu().numpy()
+    del cNb, cSb
+
+    if str(device).startswith('cuda'):
+        torch.cuda.empty_cache()
+    return result
 
 
 # ===========================================================================
@@ -414,16 +602,25 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     ----------
     data : (nvox, ncond, ntrial) ndarray
     opt : dict, optional
-        Honors the same keys as the old perform_gsn:
+        Honors:
           - wantverbose (bool)
           - wantshrinkage (bool)
           - device ({'cpu', 'cuda', 'mps', 'auto'}) — only relevant when
             torch is installed; falls back to numpy on cpu otherwise.
+          - returns (iterable of str, optional): which cov matrices to
+            include in the result dict. Default ``('cN', 'cS', 'cNb',
+            'cSb')`` — the four matrices the legacy perform_gsn always
+            returned. Pass an iterable like ``['cSb', 'cNb']`` if you
+            don't need cN / cS and want to save host memory at large N.
+            Valid names: ``'cN', 'cS', 'cNb', 'cSb'``.
 
     Returns
     -------
-    dict with mnN, cN, cNb, shrinklevelN, mnS, cS, cSb, shrinklevelD,
-    ncsnr, numiters.
+    dict. Always present (cheap):
+      mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters.
+
+    Present iff named in ``opt['returns']``:
+      cN, cS, cNb, cSb — each (N, N).
     """
     if opt is None:
         opt = {}

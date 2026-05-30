@@ -242,8 +242,7 @@ def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
     c_t = _torch.as_tensor(c, dtype=tdtype, device=device)
     pts_zm_t = _torch.as_tensor(pts_zm, dtype=tdtype, device=device)
     alphas = _torch.as_tensor(shrinklevels, dtype=tdtype, device=device)
-    diag_c = _torch.diag(c_t)                                  # (N,)
-    D = _torch.diag(diag_c)                                    # (N, N)
+    diag_c = _torch.diagonal(c_t).contiguous()                 # (N,)
 
     # Chunk over shrinkage levels so the working set (covs, Ls, Y) fits
     # in available device memory. For N ≤ ~3000 with the default S=51
@@ -252,11 +251,26 @@ def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
     # devices fall into multi-chunk territory.
     chunk_size = _pick_chunk_size(N, M, S, tdtype, device)
     nll = np.full(S, np.nan, dtype=np.float64)
+    # Precompute the row/col indices we'll use to restore the diagonal
+    # in-place after the alpha-scaling. Tiny — O(N).
+    diag_idx = _torch.arange(N, device=device)
     for start in range(0, S, chunk_size):
         end = min(start + chunk_size, S)
         alphas_chunk = alphas[start:end]
-        covs = (alphas_chunk[:, None, None] * c_t.unsqueeze(0)
-                + (1 - alphas_chunk)[:, None, None] * D.unsqueeze(0))
+        # In-place covs construction. The expression
+        #     covs = alpha*c + (1 - alpha)*diag(c)
+        # is equivalent to "scale off-diagonals by alpha, leave the
+        # diagonal at diag(c)" because alpha*diag(c) + (1-alpha)*diag(c)
+        # = diag(c). So we:
+        #   1) allocate ONE chunk*N² buffer holding c repeated,
+        #   2) scale it by alpha in place (touches off-diagonals AND
+        #      diagonals — we'll fix the diagonals next),
+        #   3) restore each row's diagonal to diag(c).
+        # Peak transient is one chunk*N² tensor instead of three.
+        covs = c_t.unsqueeze(0).expand(end - start, N, N).contiguous()
+        covs.mul_(alphas_chunk[:, None, None])
+        covs[:, diag_idx, diag_idx] = diag_c.unsqueeze(0).expand(
+            end - start, N)
 
         # cholesky_ex returns (L, info). info[s] == 0 means slot s
         # factorized successfully; any other value indicates the s-th
