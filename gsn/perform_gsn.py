@@ -16,15 +16,34 @@ def perform_gsn(data, opt=None):
             availability). 'cpu' is the right choice up to N ≈ 1000 voxels because
             GPU host↔device transfer dominates below that; 'cuda' / 'mps' open up
             the GPU path for larger N. Requires torch (`pip install gsn[fast]`).
-        returns (iterable of str, optional): Which of the four (N x N)
-            covariance matrices to include in the result dict. Default
-            ``('cN', 'cS', 'cNb', 'cSb')`` — the four matrices the
-            legacy perform_gsn always returned. Pass an iterable like
-            ``['cSb', 'cNb']`` if you don't need cN / cS and want to
-            save host memory at large N. Valid names: ``'cN', 'cS',
-            'cNb', 'cSb'``. Downstream consumers (e.g. PSN) compute
-            eigenbases / Wiener filters / difference matrices from cSb
-            and cNb on the machine where they're consumed.
+        returns (iterable of str, optional): Which optional items to
+            include in the result dict. Default ``('cN', 'cS', 'cNb',
+            'cSb')`` — the four matrices the legacy perform_gsn always
+            returned. Pass an iterable like ``['cSb', 'cNb']`` if you
+            don't need cN / cS and want to save host memory at large N.
+            Valid names:
+              ``'cN', 'cS', 'cNb', 'cSb'``  — covariance matrices.
+              ``'eigvecs_signal', 'eigvals_signal'``      — eigh of cSb.
+              ``'eigvecs_difference', 'eigvals_difference'`` — eigh of
+                  ``cSb - cNb / ntrial`` (symmetric, generally indefinite).
+            Eigenvectors are columns, sorted by descending eigenvalue.
+            Pre-computing these here saves the dominant cost of PSN
+            (5-10 min per eigh at N=24640) so downstream PSN calls can
+            consume ``opt['basis'] = <matrix>`` and skip basis
+            construction entirely.
+        eigh_device ({'host', 'device'}, optional): Where to run the
+            eigh that produces the eigvecs_* / eigvals_* returns.
+            Default ``'host'`` uses numpy.linalg.eigh, which matches
+            PSN's own eigh_descending_sym bit-for-bit (same LAPACK
+            call + same deterministic sign convention) — so the
+            cached eigvecs are a true drop-in for PSN's internal
+            'signal' / 'difference' branches. ``'device'`` runs the
+            eigh on the active torch device (~10× faster at N=24640
+            on a GPU) but picks a different orthonormal basis on
+            cSb's zero-eigenvalue subspace; PSN's threshold selection
+            is sensitive to that, so downstream results will diverge
+            by a few percent from a PSN-internal eigh. Only relevant
+            when an eigvecs_* / eigvals_* item is in ``returns``.
 
     Regarding uneven number of trials across conditions:
     - It is acceptable that different conditions may have different numbers

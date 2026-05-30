@@ -60,18 +60,29 @@ else:
 
 # Output selection ---------------------------------------------------------
 #
-# A caller picks which of the four cov matrices they actually need via
-# opt['returns']. Default matches the legacy perform_gsn output (all
-# four). The cheap items below are always returned regardless:
+# A caller picks which output items they need via opt['returns']. The
+# default matches the legacy perform_gsn output (the four cov matrices
+# cN / cS / cNb / cSb). The cheap items below are always returned
+# regardless:
 #
 #     mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters
 #
-# Eigendecompositions / Wiener filters / etc. are NOT part of GSN's
-# output — downstream consumers (e.g. PSN) compute those from cSb / cNb
-# on the machine where they're consumed, which is the right place to
-# decide rank / precision / etc.
+# Opt-in eigenbases:
+#     'eigvecs_signal'      eigenvectors of cSb,  (nvox, nvox) f64 →
+#                           cast back to the run dtype before returning
+#     'eigvals_signal'      eigenvalues of cSb,   (nvox,)
+#     'eigvecs_difference'  eigenvectors of (cSb - cNb / ntrial), (nvox, nvox)
+#     'eigvals_difference'  eigenvalues of (cSb - cNb / ntrial), (nvox,)
+#
+# All eigvecs are columns; both pairs are sorted by descending
+# eigenvalue. Eigendecomposing inside GSN saves the dominant cost of
+# downstream PSN (PSN at nvox=24640 spends 5-10 min on each eigh; auto
+# mode does it twice). Saving them once means later PSN calls just
+# consume opt['basis'] = <matrix> and skip basis construction.
 
-_VALID_RETURNS = ('cN', 'cS', 'cNb', 'cSb')
+_VALID_RETURNS = ('cN', 'cS', 'cNb', 'cSb',
+                  'eigvecs_signal', 'eigvals_signal',
+                  'eigvecs_difference', 'eigvals_difference')
 DEFAULT_RETURNS = ('cN', 'cS', 'cNb', 'cSb')
 
 
@@ -118,8 +129,23 @@ def _delegate_uneven(data, opt):
     result.pop('splitr', None)
 
     # rsa_noise_ceiling always returns all four cov matrices; drop the
-    # ones the caller didn't ask for.
-    for k in _VALID_RETURNS:
+    # ones the caller didn't ask for. Eigenbases are added post-hoc
+    # because rsa_noise_ceiling doesn't compute them.
+    want_es = 'eigvecs_signal'     in returns or 'eigvals_signal'     in returns
+    want_ed = 'eigvecs_difference' in returns or 'eigvals_difference' in returns
+    if want_es:
+        d, V = _eigh_descending_numpy(result['cSb'])
+        if 'eigvals_signal' in returns: result['eigvals_signal'] = d
+        if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V
+    if want_ed:
+        # ntrial_avg from the data — rsa_noise_ceiling uses the average
+        # over conditions with ≥2 valid trials. Approximate it here.
+        ntrial_avg = np.nanmean(np.sum(~np.isnan(data[0]), axis=-1))
+        d, V = _eigh_descending_numpy(
+            result['cSb'] - result['cNb'] / ntrial_avg)
+        if 'eigvals_difference' in returns: result['eigvals_difference'] = d
+        if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V
+    for k in ('cN', 'cS', 'cNb', 'cSb'):
         if k not in returns and k in result:
             del result[k]
     return result
@@ -283,17 +309,16 @@ def _run_numpy(data_np, opt) -> Dict[str, Any]:
 
     return _assemble_result_numpy(
         returns, mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters,
-        cN, cS, cNb, cSb)
+        cN, cS, cNb, cSb, ntrial)
 
 
 def _assemble_result_numpy(returns, mnN, mnS, ncsnr,
                            shrinklevelN, shrinklevelD, numiters,
-                           cN, cS, cNb, cSb):
+                           cN, cS, cNb, cSb, ntrial):
     """Build the public result dict honoring ``returns``.
 
-    Cheap items are always present; cov matrices are included only when
-    named in ``returns`` so callers who don't need all four can save
-    the corresponding memory.
+    Cheap items are always present; cov matrices and eigenbases are
+    included only when named in ``returns``.
     """
     result: Dict[str, Any] = {
         'mnN': mnN, 'shrinklevelN': shrinklevelN,
@@ -304,7 +329,54 @@ def _assemble_result_numpy(returns, mnN, mnS, ncsnr,
     if 'cS'  in returns: result['cS']  = cS
     if 'cNb' in returns: result['cNb'] = cNb
     if 'cSb' in returns: result['cSb'] = cSb
+
+    # Eigenbases — opt-in. Sorted descending by eigenvalue so column 0
+    # is the top mode. cSb is symmetric (we projected to nearest-PSD
+    # in biconvex) so eigh is the right tool; the difference matrix
+    # cSb - cNb / ntrial is symmetric but generally indefinite, eigh
+    # still applies and the negative eigenvalues are physically
+    # meaningful (variance the noise has in those dims minus the
+    # signal's; PSN treats them accordingly).
+    want_es = 'eigvecs_signal'     in returns or 'eigvals_signal'     in returns
+    want_ed = 'eigvecs_difference' in returns or 'eigvals_difference' in returns
+    if want_es:
+        d, V = _eigh_descending_numpy(cSb)
+        if 'eigvals_signal' in returns: result['eigvals_signal'] = d
+        if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V
+    if want_ed:
+        d, V = _eigh_descending_numpy(cSb - cNb / ntrial)
+        if 'eigvals_difference' in returns: result['eigvals_difference'] = d
+        if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V
     return result
+
+
+def _eigh_descending_numpy(M):
+    """eigh on a symmetric matrix, returned in descending order with
+    a deterministic sign convention.
+
+    Matches PSN's eigh_descending_sym exactly so that PSN consuming
+    these vectors via opt['basis'] + opt['basis_eigenvalues'] reproduces
+    'basis': 'signal' / 'difference' bit-for-bit:
+      - LAPACK driver: numpy.linalg.eigh (same as PSN; using scipy
+        with driver='evr' picks a different orthonormal basis on
+        degenerate eigenspaces).
+      - Sort: by eigenvalue descending (value, not magnitude — so
+        negative eigenvalues of the indefinite difference matrix
+        sort to the tail, which is what PSN expects).
+      - Sign: each column's element of largest absolute value made
+        positive (zeros mapped to +1).
+
+    Returns (eigenvalues (N,), eigenvectors (N, N) with column i = vec i).
+    """
+    d, V = np.linalg.eigh(M)
+    order = np.argsort(d)[::-1]
+    d = d[order]
+    V = V[:, order]
+    piv = np.argmax(np.abs(V), axis=0)
+    sgn = np.sign(V[piv, np.arange(V.shape[1])])
+    sgn[sgn == 0] = 1
+    V = V * sgn
+    return d.astype(M.dtype, copy=False), V.astype(M.dtype, copy=False)
 
 
 # ===========================================================================
@@ -387,6 +459,69 @@ def _shrunken_cov_2d_torch(data_2d, leaveout, shrinklevels_np, device):
     D_full = torch.diag(diag_full)
     c_final = chosen_level * c_full + (1 - chosen_level) * D_full
     return mn_full, c_final, chosen_level
+
+
+def _eigh_descending_torch(M, out_dtype=None):
+    """eigh on a symmetric device tensor, returned in descending order.
+
+    Mirrors _nearest_psd_torch's robustness pattern:
+      - f32 inputs are upcast to f64 for the eigh (cuSOLVER syevd is
+        unreliable on near-singular f32)
+      - if the device eigh raises (typically the cuSOLVER syevd
+        workspace limit at very large N), fall back to
+        scipy.linalg.eigh on the host
+
+    Returns (eigvals (N,), eigvecs (N, N) with descending order).
+    Output dtype defaults to the input dtype.
+    """
+    M_sym = (M + M.transpose(-1, -2)).mul_(0.5)
+    in_dtype = M_sym.dtype
+    orig_device = M_sym.device
+    if out_dtype is None:
+        out_dtype = in_dtype
+
+    if in_dtype == torch.float32:
+        M_eig = M_sym.to(torch.float64)
+        del M_sym
+    else:
+        M_eig = M_sym
+
+    try:
+        d, V = torch.linalg.eigh(M_eig)
+    except (torch.OutOfMemoryError, RuntimeError) as err:
+        warnings.warn(
+            f'_eigh_descending_torch: device eigh failed '
+            f'({type(err).__name__}); falling back to scipy CPU eigh.')
+        import scipy.linalg as _scilin
+        M_np = M_eig.cpu().numpy()
+        if str(orig_device).startswith('cuda'):
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        d_np, V_np = _scilin.eigh(M_np, driver='evr')
+        del M_np
+        d = torch.from_numpy(d_np).to(orig_device)
+        V = torch.from_numpy(V_np).to(orig_device)
+        del d_np, V_np
+    del M_eig
+
+    # eigh returns ascending order — reverse to descending.
+    d = d.flip(0)
+    V = V.flip(1)
+    # Match PSN's eigh_descending_sym sign convention so callers can
+    # consume these vectors directly via opt['basis'] + opt['basis_
+    # eigenvalues'] and reproduce PSN's 'signal'/'difference' branches
+    # bit-for-bit. Pick the largest-magnitude element in each column
+    # and force its sign positive.
+    piv = torch.argmax(torch.abs(V), dim=0)
+    col_idx = torch.arange(V.shape[1], device=V.device)
+    sgn = torch.sign(V[piv, col_idx])
+    sgn = torch.where(sgn == 0, torch.ones_like(sgn), sgn)
+    V = V * sgn.unsqueeze(0)
+    if d.dtype != out_dtype: d = d.to(out_dtype)
+    if V.dtype != out_dtype: V = V.to(out_dtype)
+    return d, V
 
 
 def _nearest_psd_torch(M, eps=1e-10):
@@ -584,6 +719,67 @@ def _run_torch(data_np, opt, device) -> Dict[str, Any]:
 
     if 'cNb' in returns: result['cNb'] = cNb.cpu().numpy()
     if 'cSb' in returns: result['cSb'] = cSb.cpu().numpy()
+
+    # Eigenbases — opt-in via opt['returns']. Two paths:
+    #
+    # opt['eigh_device'] = 'host' (default): numpy.linalg.eigh on the
+    #   host + deterministic sign convention. Produces vectors bit-
+    #   equivalent to PSN's own eigh_descending_sym, so the cached
+    #   eigvecs are a drop-in for PSN's internal 'signal' / 'difference'
+    #   branches. Cost: one extra (N, N) f64 host eigh (~15-20 min at
+    #   N=24640). Still cheaper than re-running the same eigh once per
+    #   downstream PSN call.
+    #
+    # opt['eigh_device'] = 'device' (opt-in): torch eigh on the active
+    #   device (CUDA/MPS), with the same f64 upcast + sign convention.
+    #   Much faster at large N (~1-2 min at N=24640 on H100). Produces
+    #   a mathematically valid orthonormal basis, but picks DIFFERENT
+    #   rotations on degenerate (zero-eigenvalue) subspaces of cSb —
+    #   always present when nvox > ncond - 1 (the typical EEG case).
+    #   PSN's downstream threshold selection uses
+    #     noise_proj_diag = V[:, i].T @ cNb @ V[:, i]
+    #   which IS sensitive to those rotations even though
+    #   signal_proj_diag is not. So device-cached eigvecs feeding PSN
+    #   will produce results that diverge by a few percent from
+    #   PSN running its own eigh. Choose this when you don't need
+    #   exact PSN parity and want the GSN run to finish faster.
+    want_es = 'eigvecs_signal'     in returns or 'eigvals_signal'     in returns
+    want_ed = 'eigvecs_difference' in returns or 'eigvals_difference' in returns
+    if want_es or want_ed:
+        eigh_device = opt.get('eigh_device', 'host')
+        if eigh_device not in ('host', 'device'):
+            raise ValueError(
+                f"opt['eigh_device'] must be 'host' or 'device'; "
+                f"got {eigh_device!r}")
+        if eigh_device == 'host':
+            cSb_np = cSb.cpu().numpy()
+            if want_es:
+                d, V = _eigh_descending_numpy(cSb_np)
+                if 'eigvals_signal' in returns: result['eigvals_signal'] = d
+                if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V
+            if want_ed:
+                cNb_np = cNb.cpu().numpy()
+                d, V = _eigh_descending_numpy(cSb_np - cNb_np / ntrial)
+                if 'eigvals_difference' in returns: result['eigvals_difference'] = d
+                if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V
+            del cSb_np
+        else:
+            if want_es:
+                d, V = _eigh_descending_torch(cSb)
+                if 'eigvals_signal' in returns: result['eigvals_signal'] = d.cpu().numpy()
+                if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V.cpu().numpy()
+                del d, V
+                if str(device).startswith('cuda'):
+                    torch.cuda.empty_cache()
+            if want_ed:
+                diff = cSb.clone().sub_(cNb, alpha=1.0 / ntrial)
+                d, V = _eigh_descending_torch(diff)
+                del diff
+                if 'eigvals_difference' in returns: result['eigvals_difference'] = d.cpu().numpy()
+                if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V.cpu().numpy()
+                del d, V
+                if str(device).startswith('cuda'):
+                    torch.cuda.empty_cache()
     del cNb, cSb
 
     if str(device).startswith('cuda'):
