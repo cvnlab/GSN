@@ -28,7 +28,7 @@ def perform_gsn(data, opt=None):
                   ``cSb - cNb / ntrial`` (symmetric, generally indefinite).
             Eigenvectors are columns, sorted by descending eigenvalue.
             Pre-computing these here saves the dominant cost of PSN
-            (5-10 min per eigh at N=24640) so downstream PSN calls can
+            at large N (eigh is O(N^3)) so downstream PSN calls can
             consume ``opt['basis'] = <matrix>`` and skip basis
             construction entirely.
         eigh_device ({'host', 'device'}, optional): Where to run the
@@ -38,11 +38,12 @@ def perform_gsn(data, opt=None):
             call + same deterministic sign convention) — so the
             cached eigvecs are a true drop-in for PSN's internal
             'signal' / 'difference' branches. ``'device'`` runs the
-            eigh on the active torch device (~10× faster at N=24640
-            on a GPU) but picks a different orthonormal basis on
-            cSb's zero-eigenvalue subspace; PSN's threshold selection
-            is sensitive to that, so downstream results will diverge
-            by a few percent from a PSN-internal eigh. Only relevant
+            eigh on the active torch device (typically much faster
+            on GPU at large N) but picks a different orthonormal
+            basis on cSb's zero-eigenvalue subspace; PSN's threshold
+            selection is sensitive to that, so downstream results
+            will diverge by a few percent from a PSN-internal eigh.
+            Only relevant
             when an eigvecs_* / eigvals_* item is in ``returns``.
 
     Regarding uneven number of trials across conditions:

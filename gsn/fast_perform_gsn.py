@@ -76,9 +76,9 @@ else:
 #
 # All eigvecs are columns; both pairs are sorted by descending
 # eigenvalue. Eigendecomposing inside GSN saves the dominant cost of
-# downstream PSN (PSN at nvox=24640 spends 5-10 min on each eigh; auto
-# mode does it twice). Saving them once means later PSN calls just
-# consume opt['basis'] = <matrix> and skip basis construction.
+# downstream PSN at large N (eigh is O(N^3), and auto mode does it
+# twice). Saving them once means later PSN calls just consume
+# opt['basis'] = <matrix> and skip basis construction.
 
 _VALID_RETURNS = ('cN', 'cS', 'cNb', 'cSb',
                   'eigvecs_signal', 'eigvals_signal',
@@ -726,17 +726,17 @@ def _run_torch(data_np, opt, device) -> Dict[str, Any]:
     #   host + deterministic sign convention. Produces vectors bit-
     #   equivalent to PSN's own eigh_descending_sym, so the cached
     #   eigvecs are a drop-in for PSN's internal 'signal' / 'difference'
-    #   branches. Cost: one extra (N, N) f64 host eigh (~15-20 min at
-    #   N=24640). Still cheaper than re-running the same eigh once per
-    #   downstream PSN call.
+    #   branches. Cost: one extra (N, N) f64 host eigh — still cheaper
+    #   than re-running the same eigh once per downstream PSN call.
     #
     # opt['eigh_device'] = 'device' (opt-in): torch eigh on the active
     #   device (CUDA/MPS), with the same f64 upcast + sign convention.
-    #   Much faster at large N (~1-2 min at N=24640 on H100). Produces
-    #   a mathematically valid orthonormal basis, but picks DIFFERENT
-    #   rotations on degenerate (zero-eigenvalue) subspaces of cSb —
-    #   always present when nvox > ncond - 1 (the typical EEG case).
-    #   PSN's downstream threshold selection uses
+    #   Much faster at large N. Produces a mathematically valid
+    #   orthonormal basis, but picks DIFFERENT rotations on
+    #   degenerate (zero-eigenvalue) subspaces of cSb — always
+    #   present when nvox > ncond - 1, which is common for the kinds
+    #   of high-dimensional data PSN is intended for. PSN's
+    #   downstream threshold selection uses
     #     noise_proj_diag = V[:, i].T @ cNb @ V[:, i]
     #   which IS sensitive to those rotations even though
     #   signal_proj_diag is not. So device-cached eigvecs feeding PSN
