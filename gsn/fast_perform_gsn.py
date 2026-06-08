@@ -1165,11 +1165,18 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     opt.setdefault('wantshrinkage', True)
 
     uneven = np.isnan(data).any()
-    # opt['uneven'] = 'reference' forces the original rsa_noise_ceiling
-    # delegation (kept as a parity oracle); default 'fast' uses the
-    # NaN-aware accelerated path below.
+    # opt['uneven'] selects how missing data is handled:
+    #   'fast'      (default) — whole-trial uneven path (a trial is valid only
+    #               if every unit is present); fast NaN-aware estimation.
+    #   'reference' — original rsa_noise_ceiling delegation (parity oracle).
+    #   'missing' — missing-units estimation for per-UNIT missingness (a
+    #               trial may have some units present and others missing); no
+    #               good data discarded. See gsn.missing_units.
     if uneven and opt.get('uneven', 'fast') == 'reference':
         return _delegate_uneven(data, opt)
+    if uneven and opt.get('uneven') == 'missing':
+        from gsn.missing_units import run_missing_units_numpy
+        return run_missing_units_numpy(data, opt)
 
     device_str = opt.get('device', 'cpu')
     if device_str != 'cpu' and not _HAS_TORCH:
