@@ -1174,14 +1174,18 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     #               good data discarded. See gsn.missing_units.
     if uneven and opt.get('uneven', 'fast') == 'reference':
         return _delegate_uneven(data, opt)
-    if uneven and opt.get('uneven') == 'missing':
-        from gsn.missing_units import run_missing_units_numpy
-        return run_missing_units_numpy(data, opt)
 
     device_str = opt.get('device', 'cpu')
     if device_str != 'cpu' and not _HAS_TORCH:
         # Asked for GPU but no torch — silently demote to cpu+numpy.
         device_str = 'cpu'
+
+    if uneven and opt.get('uneven') == 'missing':
+        if _HAS_TORCH:
+            from gsn.missing_units import run_missing_units_torch
+            return run_missing_units_torch(data, opt, _resolve_device(device_str))
+        from gsn.missing_units import run_missing_units_numpy
+        return run_missing_units_numpy(data, opt)
 
     if uneven:
         if _HAS_TORCH:

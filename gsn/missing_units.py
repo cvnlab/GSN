@@ -47,7 +47,12 @@ from typing import Any, Dict
 import numpy as np
 
 from gsn.fast_perform_gsn import (
+    torch,
+    _HAS_TORCH,
     _nearest_psd_numpy,
+    _nearest_psd_torch,
+    _eigh_descending_torch,
+    _torch_dtype_for,
     _shrunken_cov_2d_numpy,
     _shrunken_noise_cov_uneven_numpy,
     _uneven_validity,
@@ -264,4 +269,164 @@ def run_missing_units_numpy(data, opt) -> Dict[str, Any]:
         d, V = _eigh_descending_numpy(cSb - cNb * alpha)
         if 'eigvals_difference' in returns: result['eigvals_difference'] = d
         if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V
+    return result
+
+
+# ===========================================================================
+# Torch path — same estimator on device. Heavy covariance loop + biconvex run
+# on the active device; shrinkage levels are picked on the host (cheap scalars,
+# reuses the numpy selectors) and applied on device.
+# ===========================================================================
+
+def _pairwise_cov_torch(Xm, Mb):
+    """Torch version of _pairwise_cov. Returns (cov, K)."""
+    S2 = Xm @ Xm.T
+    Si = Xm @ Mb.T
+    K = Mb @ Mb.T
+    Kpos = torch.where(K > 0, K, torch.ones_like(K))
+    num = S2 - Si * Si.T / Kpos
+    Km1 = torch.where(K > 1, K - 1.0, torch.ones_like(K))
+    cov = torch.where(K >= 2, num / Km1, torch.zeros_like(num))
+    return cov, K
+
+
+def _missing_cn_alpha_torch(data, M, device, dtype):
+    """Torch version of _missing_cn_alpha over all conditions."""
+    nvox, ncond, _ = data.shape
+    z = lambda: torch.zeros((nvox, nvox), dtype=dtype, device=device)
+    cN_acc, cN_cnt, a_num, a_cnt = z(), z(), z(), z()
+    zero = torch.zeros((), dtype=dtype, device=device)
+    for c in range(ncond):
+        Mb = M[:, c, :].to(dtype)
+        Xm = torch.where(M[:, c, :], data[:, c, :], zero)
+        cov, Nc = _pairwise_cov_torch(Xm, Mb)
+        ge2 = Nc >= 2
+        cN_acc += torch.where(ge2, cov, torch.zeros_like(cov))
+        cN_cnt += ge2.to(dtype)
+        ni = Mb.sum(1)
+        defined = ni >= 1
+        both = defined[:, None] & defined[None, :]
+        denom = ni[:, None] * ni[None, :]
+        term = torch.where(both, Nc / torch.where(denom > 0, denom, torch.ones_like(denom)),
+                           torch.zeros_like(Nc))
+        a_num += term
+        a_cnt += both.to(dtype)
+    cN = torch.where(cN_cnt > 0, cN_acc / torch.where(cN_cnt > 0, cN_cnt, torch.ones_like(cN_cnt)),
+                     torch.zeros_like(cN_acc))
+    alpha = torch.where(a_cnt > 0, a_num / torch.where(a_cnt > 0, a_cnt, torch.ones_like(a_cnt)),
+                        torch.zeros_like(a_num))
+    return cN, alpha
+
+
+def _condition_means_torch(data, M, dtype):
+    n_ic = M.sum(2).to(dtype)
+    zero = torch.zeros((), dtype=dtype, device=data.device)
+    x0 = torch.where(M, data, zero)
+    CM = x0.sum(2) / torch.where(n_ic >= 1, n_ic, torch.ones_like(n_ic))
+    Dmask = n_ic >= 1
+    return CM, Dmask, n_ic
+
+
+def _missing_cov2d_torch(CM, Dmask, dtype):
+    zero = torch.zeros((), dtype=dtype, device=CM.device)
+    CMm = torch.where(Dmask, CM, zero)
+    cov, _ = _pairwise_cov_torch(CMm, Dmask.to(dtype))
+    return cov
+
+
+def _shrink_to_diag_torch(c, level):
+    out = c * level
+    if out.shape[0] > 1:
+        idx = torch.arange(out.shape[0], device=out.device)
+        out[idx, idx] = torch.diagonal(c)
+    return out
+
+
+def _biconvex_missing_torch(cN, cD, alpha, ncond, ntrial_eff, max_iters=100):
+    e = float(ntrial_eff)
+    coef_N = ((ncond * (e - 1) * e ** 2) / (ncond * e ** 2 * (e - 1) + ncond - 1))
+    coef_D = ((ncond - 1) / (ncond * e ** 2 * (e - 1) + ncond - 1))
+    cNb = cN
+    cSb_old = cD - cN * alpha
+    cNb_old = cN
+    numiters = 0
+    for _ in range(max_iters):
+        cSb = _nearest_psd_torch(cD - cNb * alpha)
+        cNb = _nearest_psd_torch(coef_N * cN + coef_D * e * (cD - cSb))
+        if cSb.shape[0] == 1:
+            converged = (torch.abs(cSb_old - cSb).item() < 1e-5
+                         and torch.abs(cNb_old - cNb).item() < 1e-5)
+        else:
+            r_S = _flat_corr(cSb_old, cSb)
+            r_N = _flat_corr(cNb_old, cNb)
+            converged = r_S > 0.999 and r_N > 0.999
+        if converged:
+            break
+        numiters += 1
+        cSb_old = cSb
+        cNb_old = cNb
+        if str(cN.device).startswith('cuda'):
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+    return cSb, cNb, numiters
+
+
+def _flat_corr(a, b):
+    af, bf = a.flatten(), b.flatten()
+    af = af - af.mean(); bf = bf - bf.mean()
+    d = torch.sqrt((af * af).sum() * (bf * bf).sum())
+    return float((af * bf).sum() / d) if d > 0 else 0.0
+
+
+def run_missing_units_torch(data_np, opt, device) -> Dict[str, Any]:
+    dtype = _torch_dtype_for(data_np, device)
+    nvox, ncond, _ = data_np.shape
+    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
+                    else np.array([1.0]))
+    returns = _normalize_returns(opt.get('returns'))
+
+    M_np = ~np.isnan(data_np)
+    # shrinkage levels on the host (cheap scalars; reuse numpy selectors)
+    CM_np, Dmask_np, _ = _condition_means(data_np, M_np)
+    lvlN = _level_complete_trials(data_np, M_np, shrinklevels)
+    lvlD = _level_complete_conds(CM_np, Dmask_np, shrinklevels)
+    mnD = np.nanmean(np.where(Dmask_np, CM_np, np.nan), axis=1)[None, :]
+
+    data = torch.as_tensor(data_np, dtype=dtype, device=device)
+    M = torch.as_tensor(M_np, device=device)
+    cN_raw, alpha = _missing_cn_alpha_torch(data, M, device, dtype)
+    CM, Dmask, n_ic = _condition_means_torch(data, M, dtype)
+    del data
+    cD_raw = _missing_cov2d_torch(CM, Dmask, dtype)
+    cN = _shrink_to_diag_torch(cN_raw, lvlN)
+    cD = _shrink_to_diag_torch(cD_raw, lvlD)
+    cS = cD - cN * alpha
+    sd_noise = torch.sqrt(torch.clamp(torch.diagonal(cN), min=0))
+    sd_signal = torch.sqrt(torch.clamp(torch.diagonal(cS), min=0))
+    ncsnr = torch.where(sd_noise > 0, sd_signal / sd_noise, torch.zeros_like(sd_signal))
+    ntrial_eff = float(n_ic[Dmask].mean().item()) if bool(Dmask.any()) else 1.0
+    cSb, cNb, numiters = _biconvex_missing_torch(cN, cD, alpha, ncond, ntrial_eff)
+
+    result: Dict[str, Any] = {
+        'mnN': np.zeros((1, nvox)), 'shrinklevelN': lvlN,
+        'mnS': mnD, 'shrinklevelD': lvlD,
+        'ncsnr': ncsnr.cpu().numpy(), 'numiters': numiters,
+    }
+    if 'cN' in returns: result['cN'] = cN.cpu().numpy()
+    if 'cS' in returns: result['cS'] = cS.cpu().numpy()
+    if 'cNb' in returns: result['cNb'] = cNb.cpu().numpy()
+    if 'cSb' in returns: result['cSb'] = cSb.cpu().numpy()
+    want_es = 'eigvecs_signal'     in returns or 'eigvals_signal'     in returns
+    want_ed = 'eigvecs_difference' in returns or 'eigvals_difference' in returns
+    if want_es:
+        d, V = _eigh_descending_torch(cSb)
+        if 'eigvals_signal' in returns: result['eigvals_signal'] = d.cpu().numpy()
+        if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V.cpu().numpy()
+    if want_ed:
+        diff = cSb - cNb * alpha
+        d, V = _eigh_descending_torch(diff)
+        if 'eigvals_difference' in returns: result['eigvals_difference'] = d.cpu().numpy()
+        if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V.cpu().numpy()
     return result

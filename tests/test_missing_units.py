@@ -251,6 +251,36 @@ def test_outputs_psd_and_symmetric():
 
 
 # --------------------------------------------------------------------------
+# 4b. torch path matches numpy
+# --------------------------------------------------------------------------
+
+def test_torch_matches_numpy():
+    from gsn.fast_perform_gsn import _HAS_TORCH, _resolve_device
+    if not _HAS_TORCH:
+        import pytest as _pt
+        _pt.skip('torch not installed')
+    from gsn.missing_units import run_missing_units_torch
+    for seed in range(2):
+        data = punch_holes(complete_data(nvox=8, ncond=30, ntrial=6, seed=seed), 0.25,
+                           seed=seed + 3)
+        opt = {'returns': RET}
+        rn = run_missing_units_numpy(data.copy(), opt)
+        rt = run_missing_units_torch(data.copy(), opt, _resolve_device('cpu'))
+        for k in ('cN', 'cS', 'cNb', 'cSb', 'ncsnr', 'mnN', 'mnS',
+                  'eigvals_signal', 'eigvals_difference'):
+            assert np.allclose(np.asarray(rn[k], float), np.asarray(rt[k], float),
+                               atol=1e-7, rtol=1e-6), f'{k} (seed={seed})'
+        assert rn['shrinklevelN'] == rt['shrinklevelN']
+        assert rn['shrinklevelD'] == rt['shrinklevelD']
+        dr, Vr = rn['eigvals_signal'], rn['eigvecs_signal']
+        rank = int((dr > 1e-9 * max(abs(dr).max(), 1)).sum())
+        Pn = Vr[:, :rank] @ Vr[:, :rank].T
+        Vt = rt['eigvecs_signal']
+        Pt = Vt[:, :rank] @ Vt[:, :rank].T
+        assert np.allclose(Pn, Pt, atol=1e-6)
+
+
+# --------------------------------------------------------------------------
 # 5. routing + uses-all-data sanity
 # --------------------------------------------------------------------------
 
