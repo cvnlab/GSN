@@ -256,20 +256,29 @@ def _nearest_psd_numpy(M, eps=1e-10):
     return Mp
 
 
-def _biconvex_numpy(cN, cD, cS, ncond, ntrial, max_iters=100):
-    """Biconvex cSb / cNb iteration. Convergence: corrcoef on flat N²."""
+def _biconvex_numpy(cN, cD, cS, ncond, ntrial, max_iters=100, ntrialBC=None):
+    """Biconvex cSb / cNb iteration. Convergence: corrcoef on flat N².
+
+    ``ntrial`` is used for the ``cD - cNb/ntrial`` step (the per-trial-average
+    noise scaling); ``ntrialBC`` drives the cNb update coefficients. They
+    differ only for uneven-trials data, where rsa_noise_ceiling uses
+    ntrial = min(validcnt) for the former and ntrialBC = average count for the
+    latter. ``ntrialBC=None`` (even data) makes both equal -> bit-unchanged.
+    """
+    if ntrialBC is None:
+        ntrialBC = ntrial
     cNb = cN
     cSb_old = cS
     cNb_old = cN
     numiters = 0
     for _ in range(max_iters):
         cSb = _nearest_psd_numpy(cD - cNb / ntrial)
-        # cNb update formula from rsa_noise_ceiling
-        coef_N = ((ncond * (ntrial - 1) * ntrial ** 2)
-                  / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
+        # cNb update formula from rsa_noise_ceiling (coefficients use ntrialBC)
+        coef_N = ((ncond * (ntrialBC - 1) * ntrialBC ** 2)
+                  / (ncond * ntrialBC ** 2 * (ntrialBC - 1) + ncond - 1))
         coef_D = ((ncond - 1)
-                  / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
-        cNb = _nearest_psd_numpy(coef_N * cN + coef_D * ntrial * (cD - cSb))
+                  / (ncond * ntrialBC ** 2 * (ntrialBC - 1) + ncond - 1))
+        cNb = _nearest_psd_numpy(coef_N * cN + coef_D * ntrialBC * (cD - cSb))
         if cSb.shape[0] == 1:
             converged = (abs(cSb_old - cSb) < 1e-5
                          and abs(cNb_old - cNb) < 1e-5)
@@ -310,6 +319,156 @@ def _run_numpy(data_np, opt) -> Dict[str, Any]:
     return _assemble_result_numpy(
         returns, mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters,
         cN, cS, cNb, cSb, ntrial)
+
+
+# ===========================================================================
+# Uneven-trials path (NaN-padded data)
+# ---------------------------------------------------------------------------
+# Mirrors rsa_noise_ceiling mode=1 so the covariance outputs match the
+# reference (hence MATLAB) to numerical precision, but the per-condition
+# noise covariance is one vectorized GEMM instead of a Python loop, and the
+# biconvex / eigh reuse the fast even-path machinery. Key facts replicated
+# exactly:
+#   * noise cov  = average over conditions (>=2 valid trials) of each
+#                  condition's unbiased sample cov (np.cov bias=False).
+#   * data cov   = condition means after truncating every condition to
+#                  min(validcnt) randomly-chosen valid trials.
+#   * ntrial     = min(validcnt)         -> cS, cSb (= cD - cNb/ntrial).
+#   * ntrialBC   = mean valid count over conditions with >1 trial -> biconvex
+#                  coefficients.
+#   * diff basis = cSb - cNb / mean(validcnt)  (matches _delegate_uneven).
+# deterministic_randperm is stateless (depends only on its length arg), so
+# replaying the same length arguments reproduces the reference's random
+# trial choices bit-for-bit.
+# ===========================================================================
+
+def _uneven_validity(data_np):
+    """Per-(cond, trial) validity mask and per-condition valid counts.
+
+    A trial is valid for a condition iff no voxel is NaN (NaN-padding marks
+    whole missing trials). Returns (valid (ncond, ntrial) bool,
+    validcnt (ncond,) int).
+    """
+    valid = ~np.isnan(data_np).any(axis=0)        # (ncond, ntrial)
+    validcnt = valid.sum(axis=1).astype(int)      # (ncond,)
+    return valid, validcnt
+
+
+def _percond_avg_cov_numpy(data_np, valid, validcnt, cond_idx):
+    """Average of per-condition unbiased sample covariances over cond_idx.
+
+    For each condition with >=2 valid trials: covariance of its valid trials
+    normalized by (T_c - 1) (== np.cov(..., bias=False)); then averaged across
+    those conditions. Done as one GEMM over weighted centered residuals.
+    """
+    nvox = data_np.shape[0]
+    sub = data_np[:, cond_idx, :]                       # (nvox, k, ntrial)
+    vsub = valid[cond_idx]                               # (k, ntrial)
+    cnt = validcnt[cond_idx].astype(np.float64)         # (k,)
+    d0 = np.where(vsub[None], sub, 0.0)                 # NaN -> 0
+    mean_c = d0.sum(axis=2) / np.maximum(cnt, 1.0)      # (nvox, k)
+    r = np.where(vsub[None], d0 - mean_c[:, :, None], 0.0)
+    w = np.where(cnt >= 2, 1.0 / np.maximum(cnt - 1.0, 1.0), 0.0)
+    nvalid = int((cnt >= 2).sum())
+    if nvalid < 1:
+        raise AssertionError('no condition with at least two valid observations')
+    rw = r * np.sqrt(w)[None, :, None]
+    R = rw.reshape(nvox, -1)
+    return (R @ R.T) / nvalid
+
+
+def _shrunken_noise_cov_uneven_numpy(data_np, valid, validcnt, leaveout, shrinklevels):
+    """cN for uneven trials: CV shrinkage selection over conditions + full refit.
+
+    Reproduces calc_shrunken_covariance's 3D uneven path (cases = conditions).
+    """
+    nvox, ncond, _ = data_np.shape
+    perm = deterministic_randperm(ncond)
+    val_size = int(np.round(ncond / leaveout))
+    ii, iinot = perm[:val_size], perm[val_size:]
+
+    c_train = _percond_avg_cov_numpy(data_np, valid, validcnt, iinot)
+    pts = []
+    for q in ii:
+        vix = valid[q]
+        if int(vix.sum()) > 1:
+            vt = data_np[:, q, vix].T                   # (T_q, nvox)
+            pts.append(vt - vt.mean(axis=0))
+    pts_zm = (np.vstack(pts) if pts
+              else np.zeros((0, nvox), dtype=data_np.dtype))
+
+    nll = _numpy_loop(c_train, pts_zm, shrinklevels)
+    if np.all(np.isnan(nll)):
+        warnings.warn('All covariance matrices were singular.')
+        best = 0
+    else:
+        best = int(np.nanargmin(nll))
+    chosen_level = float(shrinklevels[best])
+
+    c_full = _percond_avg_cov_numpy(data_np, valid, validcnt, np.arange(ncond))
+    diag_full = np.diag(c_full).copy()
+    c_final = c_full * chosen_level
+    if c_final.shape[0] > 1:
+        np.fill_diagonal(c_final, diag_full)
+    mn = np.zeros((1, nvox), dtype=data_np.dtype)
+    return mn, c_final, chosen_level
+
+
+def _truncate_min_trials_numpy(data_np, valid, validcnt):
+    """Random subset of each condition's valid trials down to min(validcnt).
+
+    Exactly reproduces rsa_noise_ceiling's uneven data-cov truncation: valid
+    trials in ascending index order, permuted by deterministic_randperm
+    (depends only on the count), first ntrial_min kept.
+    """
+    nvox, ncond, _ = data_np.shape
+    ntrial_min = int(validcnt.min())
+    newdata = np.empty((nvox, ncond, ntrial_min), dtype=data_np.dtype)
+    for p in range(ncond):
+        vidx = np.flatnonzero(valid[p])                 # ascending valid indices
+        temp = data_np[:, p, vidx]                      # (nvox, T_p)
+        ix = deterministic_randperm(temp.shape[1])
+        newdata[:, p, :] = temp[:, ix[:ntrial_min]]
+    return newdata, ntrial_min
+
+
+def _run_numpy_uneven(data_np, opt) -> Dict[str, Any]:
+    nvox, ncond, _ = data_np.shape
+    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
+                    else np.array([1.0]))
+    returns = _normalize_returns(opt.get('returns'))
+
+    valid, validcnt = _uneven_validity(data_np)
+    if not np.all(validcnt >= 1):
+        raise AssertionError('all conditions must have at least 1 valid trial')
+
+    mnN, cN, shrinklevelN = _shrunken_noise_cov_uneven_numpy(
+        data_np, valid, validcnt, 5, shrinklevels)
+
+    newdata, ntrial_min = _truncate_min_trials_numpy(data_np, valid, validcnt)
+    data_2d = np.mean(newdata, axis=2).T
+    mnD, cD, shrinklevelD = _shrunken_cov_2d_numpy(data_2d, 5, shrinklevels)
+
+    ntrialBC = float(np.sum(validcnt[validcnt > 1]) / ncond)
+    if ntrialBC < 1:
+        warnings.warn('ntrialBC is lopsided! setting to 1')
+        ntrialBC = 1.0
+
+    mnS = mnD - mnN
+    cS = cD - cN / ntrial_min
+    sd_noise = np.sqrt(np.maximum(np.diag(cN), 0))
+    sd_signal = np.sqrt(np.maximum(np.diag(cS), 0))
+    ncsnr = np.divide(sd_signal, sd_noise,
+                      out=np.zeros_like(sd_signal), where=sd_noise != 0)
+    cSb, cNb, numiters = _biconvex_numpy(
+        cN, cD, cS, ncond, ntrial_min, ntrialBC=ntrialBC)
+
+    # _assemble uses its ntrial arg ONLY for the difference eigenbasis
+    # divisor; the reference (_delegate_uneven) uses the mean valid count.
+    ntrial_avg = float(np.nanmean(validcnt))
+    return _assemble_result_numpy(
+        returns, mnN, mnS, ncsnr, shrinklevelN, shrinklevelD, numiters,
+        cN, cS, cNb, cSb, ntrial_avg)
 
 
 def _assemble_result_numpy(returns, mnN, mnS, ncsnr,
@@ -607,7 +766,7 @@ def _flat_pearson(a, b):
     return float((num / torch.sqrt(var_a * var_b)).item())
 
 
-def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100):
+def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100, ntrialBC=None):
     """Biconvex loop on device. Convergence uses pearson correlation of
     the flattened cov matrices, matching the numpy path's criterion
     (modulo floating-point reordering).
@@ -615,15 +774,21 @@ def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100):
     cSb_old at iter 0 is derived inline as cD - cN/ntrial; we never
     materialize a separate cS device tensor, which saves one full-size
     buffer of headroom throughout biconvex.
+
+    ``ntrial`` scales the cD - cNb/ntrial step; ``ntrialBC`` drives the cNb
+    update coefficients (they differ only for uneven-trials data).
+    ``ntrialBC=None`` makes both equal -> even-path bit-unchanged.
     """
+    if ntrialBC is None:
+        ntrialBC = ntrial
     cNb = cN
     cSb_old = cD.clone().sub_(cN, alpha=1.0 / ntrial)
     cNb_old = cN
     numiters = 0
-    coef_N = ((ncond * (ntrial - 1) * ntrial ** 2)
-              / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
+    coef_N = ((ncond * (ntrialBC - 1) * ntrialBC ** 2)
+              / (ncond * ntrialBC ** 2 * (ntrialBC - 1) + ncond - 1))
     coef_D = ((ncond - 1)
-              / (ncond * ntrial ** 2 * (ntrial - 1) + ncond - 1))
+              / (ncond * ntrialBC ** 2 * (ntrialBC - 1) + ncond - 1))
     for _ in range(max_iters):
         cSb = _nearest_psd_torch(
             cD.clone().sub_(cNb, alpha=1.0 / ntrial))
@@ -635,8 +800,8 @@ def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100):
 
         cNb = _nearest_psd_torch(
             (cN * coef_N)
-            .add_(cD, alpha=coef_D * ntrial)
-            .sub_(cSb, alpha=coef_D * ntrial))
+            .add_(cD, alpha=coef_D * ntrialBC)
+            .sub_(cSb, alpha=coef_D * ntrialBC))
         if cNb.shape[0] == 1:
             r_N_ok = torch.abs(cNb_old - cNb).item() < 1e-5
         else:
@@ -788,6 +953,182 @@ def _run_torch(data_np, opt, device) -> Dict[str, Any]:
 
 
 # ===========================================================================
+# Torch uneven-trials path — same algorithm as _run_numpy_uneven on device
+# ===========================================================================
+
+def _percond_avg_cov_torch(data, valid, validcnt_f, cond_idx, device):
+    """Torch version of _percond_avg_cov_numpy. ``data`` must already have
+    NaN positions replaced by 0 (so masked sums are clean)."""
+    nvox = data.shape[0]
+    sub = data.index_select(1, cond_idx)                  # (nvox, k, ntrial)
+    vsub = valid.index_select(0, cond_idx)                # (k, ntrial) bool
+    cnt = validcnt_f.index_select(0, cond_idx)            # (k,) float
+    mean_c = sub.sum(dim=2) / torch.clamp(cnt, min=1.0).unsqueeze(0)  # (nvox, k)
+    zero = torch.zeros((), dtype=data.dtype, device=device)
+    r = torch.where(vsub.unsqueeze(0), sub - mean_c.unsqueeze(2), zero)
+    w = torch.where(cnt >= 2, 1.0 / torch.clamp(cnt - 1.0, min=1.0),
+                    torch.zeros_like(cnt))
+    nvalid = int((cnt >= 2).sum().item())
+    if nvalid < 1:
+        raise AssertionError('no condition with at least two valid observations')
+    rw = r * torch.sqrt(w).view(1, -1, 1)
+    R = rw.reshape(nvox, -1)
+    return (R @ R.T) / nvalid
+
+
+def _shrunken_noise_cov_uneven_torch(data, valid, validcnt_f, valid_np,
+                                     leaveout, shrinklevels, device):
+    nvox, ncond, _ = data.shape
+    perm = deterministic_randperm(ncond)
+    val_size = int(np.round(ncond / leaveout))
+    iinot = torch.from_numpy(perm[val_size:].copy()).to(device)
+
+    c_train = _percond_avg_cov_torch(data, valid, validcnt_f, iinot, device)
+    pts = []
+    for q in perm[:val_size]:
+        vix = valid_np[q]
+        if int(vix.sum()) > 1:
+            cols = torch.from_numpy(np.flatnonzero(vix)).to(device)
+            vt = data[:, int(q), :].index_select(1, cols).T   # (T_q, nvox)
+            pts.append(vt - vt.mean(dim=0))
+    pts_zm = (torch.cat(pts, dim=0) if pts
+              else torch.zeros((0, nvox), dtype=data.dtype, device=device))
+
+    nll = _torch_batched(c_train, pts_zm, shrinklevels, device=device)
+    del pts_zm, c_train
+    if np.all(np.isnan(nll)):
+        warnings.warn('All covariance matrices were singular.')
+        best = 0
+    else:
+        best = int(np.nanargmin(nll))
+    chosen_level = float(shrinklevels[best])
+
+    c_full = _percond_avg_cov_torch(
+        data, valid, validcnt_f, torch.arange(ncond, device=device), device)
+    diag_full = torch.diagonal(c_full).clone()
+    c_full.mul_(chosen_level)
+    idx = torch.arange(nvox, device=device)
+    c_full[idx, idx] = diag_full
+    mn = torch.zeros((1, nvox), dtype=data.dtype, device=device)
+    return mn, c_full, chosen_level
+
+
+def _run_torch_uneven(data_np, opt, device) -> Dict[str, Any]:
+    dtype = _torch_dtype_for(data_np, device)
+    nvox, ncond, _ = data_np.shape
+    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
+                    else np.array([1.0]))
+    returns = _normalize_returns(opt.get('returns'))
+
+    valid_np, validcnt_np = _uneven_validity(data_np)
+    if not np.all(validcnt_np >= 1):
+        raise AssertionError('all conditions must have at least 1 valid trial')
+
+    valid = torch.as_tensor(valid_np, device=device)
+    validcnt_f = torch.as_tensor(validcnt_np, dtype=dtype, device=device)
+    data_raw = torch.as_tensor(data_np, dtype=dtype, device=device)
+    zero = torch.zeros((), dtype=dtype, device=device)
+    data = torch.where(valid.unsqueeze(0), data_raw, zero)   # NaN -> 0
+    del data_raw
+
+    mnN, cN, shrinklevelN = _shrunken_noise_cov_uneven_torch(
+        data, valid, validcnt_f, valid_np, 5, shrinklevels, device)
+    del data, valid, validcnt_f
+    if str(device).startswith('cuda'):
+        torch.cuda.empty_cache()
+
+    # Data cov: truncate to min trials in numpy (deterministic), then 2D torch.
+    newdata, ntrial_min = _truncate_min_trials_numpy(data_np, valid_np, validcnt_np)
+    data_2d = torch.as_tensor(
+        np.mean(newdata, axis=2).T, dtype=dtype, device=device).contiguous()
+    del newdata
+    mnD, cD, shrinklevelD = _shrunken_cov_2d_torch(data_2d, 5, shrinklevels, device)
+    del data_2d
+
+    ntrialBC = float(np.sum(validcnt_np[validcnt_np > 1]) / ncond)
+    if ntrialBC < 1:
+        warnings.warn('ntrialBC is lopsided! setting to 1')
+        ntrialBC = 1.0
+
+    mnS = mnD - mnN
+    diag_cS = torch.diagonal(cD) - torch.diagonal(cN) / ntrial_min
+    sd_noise = torch.sqrt(torch.clamp(torch.diag(cN), min=0))
+    sd_signal = torch.sqrt(torch.clamp(diag_cS, min=0))
+    ncsnr = torch.where(sd_noise > 0, sd_signal / sd_noise,
+                        torch.zeros_like(sd_signal))
+    del sd_noise, sd_signal, diag_cS
+    if str(device).startswith('cuda'):
+        torch.cuda.empty_cache()
+
+    result: Dict[str, Any] = {
+        'mnN': mnN.cpu().numpy(), 'shrinklevelN': shrinklevelN,
+        'mnS': mnS.cpu().numpy(), 'shrinklevelD': shrinklevelD,
+        'ncsnr': ncsnr.cpu().numpy(),
+    }
+    if 'cN' in returns:
+        result['cN'] = cN.cpu().numpy()
+    if 'cS' in returns:
+        cS_tmp = cD - cN / ntrial_min
+        result['cS'] = cS_tmp.cpu().numpy()
+        del cS_tmp
+        if str(device).startswith('cuda'):
+            torch.cuda.empty_cache()
+
+    cSb, cNb, numiters = _biconvex_torch(
+        cN, cD, ncond, ntrial_min, ntrialBC=ntrialBC)
+    result['numiters'] = numiters
+    del cN, cD
+    if 'cNb' in returns:
+        result['cNb'] = cNb.cpu().numpy()
+    if 'cSb' in returns:
+        result['cSb'] = cSb.cpu().numpy()
+
+    # Difference basis divisor matches _delegate_uneven (mean valid count).
+    ntrial_avg = float(np.nanmean(validcnt_np))
+    want_es = 'eigvecs_signal'     in returns or 'eigvals_signal'     in returns
+    want_ed = 'eigvecs_difference' in returns or 'eigvals_difference' in returns
+    if want_es or want_ed:
+        eigh_device = opt.get('eigh_device', 'host')
+        if eigh_device not in ('host', 'device'):
+            raise ValueError(
+                f"opt['eigh_device'] must be 'host' or 'device'; "
+                f"got {eigh_device!r}")
+        if eigh_device == 'host':
+            cSb_np = cSb.cpu().numpy()
+            if want_es:
+                d, V = _eigh_descending_numpy(cSb_np)
+                if 'eigvals_signal' in returns: result['eigvals_signal'] = d
+                if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V
+            if want_ed:
+                cNb_np = cNb.cpu().numpy()
+                d, V = _eigh_descending_numpy(cSb_np - cNb_np / ntrial_avg)
+                if 'eigvals_difference' in returns: result['eigvals_difference'] = d
+                if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V
+            del cSb_np
+        else:
+            if want_es:
+                d, V = _eigh_descending_torch(cSb)
+                if 'eigvals_signal' in returns: result['eigvals_signal'] = d.cpu().numpy()
+                if 'eigvecs_signal' in returns: result['eigvecs_signal'] = V.cpu().numpy()
+                del d, V
+                if str(device).startswith('cuda'):
+                    torch.cuda.empty_cache()
+            if want_ed:
+                diff = cSb.clone().sub_(cNb, alpha=1.0 / ntrial_avg)
+                d, V = _eigh_descending_torch(diff)
+                del diff
+                if 'eigvals_difference' in returns: result['eigvals_difference'] = d.cpu().numpy()
+                if 'eigvecs_difference' in returns: result['eigvecs_difference'] = V.cpu().numpy()
+                del d, V
+                if str(device).startswith('cuda'):
+                    torch.cuda.empty_cache()
+    del cNb, cSb
+    if str(device).startswith('cuda'):
+        torch.cuda.empty_cache()
+    return result
+
+
+# ===========================================================================
 # Public entry point
 # ===========================================================================
 
@@ -823,13 +1164,23 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     opt.setdefault('wantverbose', 0)
     opt.setdefault('wantshrinkage', True)
 
-    if np.isnan(data).any():
+    uneven = np.isnan(data).any()
+    # opt['uneven'] = 'reference' forces the original rsa_noise_ceiling
+    # delegation (kept as a parity oracle); default 'fast' uses the
+    # NaN-aware accelerated path below.
+    if uneven and opt.get('uneven', 'fast') == 'reference':
         return _delegate_uneven(data, opt)
 
     device_str = opt.get('device', 'cpu')
     if device_str != 'cpu' and not _HAS_TORCH:
         # Asked for GPU but no torch — silently demote to cpu+numpy.
         device_str = 'cpu'
+
+    if uneven:
+        if _HAS_TORCH:
+            device = _resolve_device(device_str)
+            return _run_torch_uneven(data, opt, device)
+        return _run_numpy_uneven(data, opt)
 
     if _HAS_TORCH:
         device = _resolve_device(device_str)

@@ -497,6 +497,55 @@ def run_all_tests_standalone():
     return True
 
 
+def _make_ragged(nvox, ncond, maxtrial, seed, latent=4):
+    rng = np.random.RandomState(seed)
+    sig = rng.randn(nvox, latent) @ rng.randn(latent, ncond)
+    data = np.full((nvox, ncond, maxtrial), np.nan)
+    for c in range(ncond):
+        ntr = rng.randint(2, maxtrial + 1)
+        data[:, c, :ntr] = sig[:, c:c + 1] + 0.7 * rng.randn(nvox, ntr)
+    return data
+
+
+def test_fast_uneven_matches_reference():
+    """The fast NaN-aware uneven path must match the reference rsa delegation.
+
+    Covariances / ncsnr / means / shrink levels / eigenvalues match to tight
+    tolerance. eigvecs_signal is only well-defined outside cSb's zero-eigenvalue
+    null space (cSb is low-rank when nvox > rank), so we compare the signal
+    SUBSPACE projector rather than raw vectors there.
+    """
+    from gsn.fast_perform_gsn import (fast_perform_gsn, _run_numpy_uneven,
+                                      _delegate_uneven)
+    RET = ['cN', 'cS', 'cNb', 'cSb', 'eigvecs_signal', 'eigvals_signal',
+           'eigvecs_difference', 'eigvals_difference']
+    for seed in range(4):
+        data = _make_ragged(12, 60, 6, seed)
+        ref = _delegate_uneven(data.copy(), {'returns': RET, 'wantverbose': 0})
+        for fast in (_run_numpy_uneven(data.copy(), {'returns': RET}),
+                     fast_perform_gsn(data.copy(),
+                                      {'returns': RET, 'device': 'cpu'})):
+            for k in ('mnN', 'mnS', 'ncsnr', 'cN', 'cS', 'cNb', 'cSb',
+                      'eigvals_signal', 'eigvals_difference',
+                      'eigvecs_difference'):
+                key = 'abs' if not k.startswith('eigvecs') else None
+                a, b = np.asarray(ref[k], float), np.asarray(fast[k], float)
+                if k == 'eigvecs_difference':
+                    assert np.allclose(np.abs(a), np.abs(b), atol=1e-8), k
+                else:
+                    assert np.allclose(a, b, atol=1e-8, rtol=1e-6), k
+            assert ref['shrinklevelN'] == fast['shrinklevelN']
+            assert ref['shrinklevelD'] == fast['shrinklevelD']
+            assert ref['numiters'] == fast['numiters']
+            # signal subspace (nonzero-eigenvalue block) must agree
+            dr, Vr = ref['eigvals_signal'], ref['eigvecs_signal']
+            Vf = fast['eigvecs_signal']
+            rank = int((dr > 1e-9 * max(abs(dr).max(), 1)).sum())
+            Pr = Vr[:, :rank] @ Vr[:, :rank].T
+            Pf = Vf[:, :rank] @ Vf[:, :rank].T
+            assert np.allclose(Pr, Pf, atol=1e-8), 'signal subspace'
+
+
 if __name__ == '__main__':
     # Run in standalone mode
     success = run_all_tests_standalone()
