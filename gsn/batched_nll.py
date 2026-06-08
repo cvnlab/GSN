@@ -269,8 +269,11 @@ def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
         # Peak transient is one chunk*N² tensor instead of three.
         covs = c_t.unsqueeze(0).expand(end - start, N, N).contiguous()
         covs.mul_(alphas_chunk[:, None, None])
+        # .clone() the expanded RHS: for N == 1 the expand view aliases memory
+        # in the diagonal assignment, which torch refuses ("input and written-to
+        # tensor refer to a single memory location").
         covs[:, diag_idx, diag_idx] = diag_c.unsqueeze(0).expand(
-            end - start, N)
+            end - start, N).clone()
 
         # cholesky_ex returns (L, info). info[s] == 0 means slot s
         # factorized successfully; any other value indicates the s-th

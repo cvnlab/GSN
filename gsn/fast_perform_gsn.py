@@ -106,6 +106,18 @@ def _normalize_returns(value):
     return s
 
 
+def _get_shrinklevels(opt):
+    """Shrinkage levels to evaluate. Honors a user-provided opt['shrinklevels']
+    (matching the reference rsa_noise_ceiling); otherwise the default 0..1 grid
+    of 51, or just [1.0] when wantshrinkage is False."""
+    lv = opt.get('shrinklevels')
+    if lv is not None:
+        return np.asarray(lv, dtype=float)
+    if opt.get('wantshrinkage', True):
+        return np.linspace(0, 1, 51)
+    return np.array([1.0])
+
+
 def _delegate_uneven(data, opt):
     """Fall back to rsa_noise_ceiling mode=1 for uneven-trials data.
 
@@ -122,8 +134,7 @@ def _delegate_uneven(data, opt):
     opt['mode'] = 1
     opt['ncsims'] = 0
     opt['wantfig'] = 0
-    opt['shrinklevels'] = (np.linspace(0, 1, 51) if opt['wantshrinkage']
-                           else np.array([1.0]))
+    opt['shrinklevels'] = _get_shrinklevels(opt)
     result = rsa_noise_ceiling(data, opt)[2]
     result.pop('sc', None)
     result.pop('splitr', None)
@@ -296,8 +307,7 @@ def _biconvex_numpy(cN, cD, cS, ncond, ntrial, max_iters=100, ntrialBC=None):
 
 def _run_numpy(data_np, opt) -> Dict[str, Any]:
     _, ncond, ntrial = data_np.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
 
     # Noise cov: (obs=ntrial, var=nvox, case=ncond)
@@ -394,8 +404,11 @@ def _shrunken_noise_cov_uneven_numpy(data_np, valid, validcnt, leaveout, shrinkl
         if int(vix.sum()) > 1:
             vt = data_np[:, q, vix].T                   # (T_q, nvox)
             pts.append(vt - vt.mean(axis=0))
-    pts_zm = (np.vstack(pts) if pts
-              else np.zeros((0, nvox), dtype=data_np.dtype))
+    if not pts:                                         # match reference assertion
+        raise AssertionError(
+            'validation data did not have any conditions with at least two '
+            'observations')
+    pts_zm = np.vstack(pts)
 
     nll = _numpy_loop(c_train, pts_zm, shrinklevels)
     if np.all(np.isnan(nll)):
@@ -434,8 +447,7 @@ def _truncate_min_trials_numpy(data_np, valid, validcnt):
 
 def _run_numpy_uneven(data_np, opt) -> Dict[str, Any]:
     nvox, ncond, _ = data_np.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
 
     valid, validcnt = _uneven_validity(data_np)
@@ -824,8 +836,7 @@ def _biconvex_torch(cN, cD, ncond, ntrial, max_iters=100, ntrialBC=None):
 def _run_torch(data_np, opt, device) -> Dict[str, Any]:
     dtype = _torch_dtype_for(data_np, device)
     _, ncond, ntrial = data_np.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
 
 
@@ -991,8 +1002,11 @@ def _shrunken_noise_cov_uneven_torch(data, valid, validcnt_f, valid_np,
             cols = torch.from_numpy(np.flatnonzero(vix)).to(device)
             vt = data[:, int(q), :].index_select(1, cols).T   # (T_q, nvox)
             pts.append(vt - vt.mean(dim=0))
-    pts_zm = (torch.cat(pts, dim=0) if pts
-              else torch.zeros((0, nvox), dtype=data.dtype, device=device))
+    if not pts:                                         # match reference assertion
+        raise AssertionError(
+            'validation data did not have any conditions with at least two '
+            'observations')
+    pts_zm = torch.cat(pts, dim=0)
 
     nll = _torch_batched(c_train, pts_zm, shrinklevels, device=device)
     del pts_zm, c_train
@@ -1016,8 +1030,7 @@ def _shrunken_noise_cov_uneven_torch(data, valid, validcnt_f, valid_np,
 def _run_torch_uneven(data_np, opt, device) -> Dict[str, Any]:
     dtype = _torch_dtype_for(data_np, device)
     nvox, ncond, _ = data_np.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
 
     valid_np, validcnt_np = _uneven_validity(data_np)
@@ -1163,6 +1176,14 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
         opt = {}
     opt.setdefault('wantverbose', 0)
     opt.setdefault('wantshrinkage', True)
+
+    # Input guards (match rsa_noise_ceiling): voxels x conditions x trials,
+    # at least 2 trials so the per-condition covariance is defined.
+    data = np.asarray(data)
+    if data.ndim != 3:
+        raise ValueError('data must be voxels x conditions x trials (3D)')
+    if data.shape[2] < 2:
+        raise ValueError('Number of trials must be at least 2.')
 
     uneven = np.isnan(data).any()
     # opt['uneven'] selects how missing data is handled:

@@ -58,6 +58,7 @@ from gsn.fast_perform_gsn import (
     _uneven_validity,
     _eigh_descending_numpy,
     _normalize_returns,
+    _get_shrinklevels,
 )
 
 
@@ -222,9 +223,13 @@ def _biconvex_missing(cN, cD, alpha, ncond, ntrial_eff, max_iters=100):
 # ---------------------------------------------------------------------------
 
 def run_missing_units_numpy(data, opt) -> Dict[str, Any]:
+    data = np.asarray(data)
+    if data.ndim != 3:
+        raise ValueError('data must be voxels x conditions x trials (3D)')
+    if data.shape[2] < 2:
+        raise ValueError('Number of trials must be at least 2.')
     nvox, ncond, _ = data.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
     M = ~np.isnan(data)
     allc = np.arange(ncond)
@@ -383,8 +388,7 @@ def _flat_corr(a, b):
 def run_missing_units_torch(data_np, opt, device) -> Dict[str, Any]:
     dtype = _torch_dtype_for(data_np, device)
     nvox, ncond, _ = data_np.shape
-    shrinklevels = (np.linspace(0, 1, 51) if opt.get('wantshrinkage', True)
-                    else np.array([1.0]))
+    shrinklevels = _get_shrinklevels(opt)
     returns = _normalize_returns(opt.get('returns'))
 
     M_np = ~np.isnan(data_np)
