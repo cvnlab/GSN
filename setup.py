@@ -18,7 +18,7 @@ setup(
     classifiers=[
       "Programming Language :: Python",
       "Development Status :: 1 - Planning",
-      "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+      "License :: OSI Approved :: BSD License",
       "Topic :: Scientific/Engineering",
       "Intended Audience :: Science/Research",
       ],

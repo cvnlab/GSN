@@ -101,8 +101,8 @@ to `perform_gsn(data, opt)`:
   neural data using GSN's signal/noise covariance estimates, skip the O(N^3)
   eigendecomposition.
 - `opt['eigh_device']`: `'host'` (default, NumPy `eigh`) or `'device'` (torch
-  `eigh`, faster on GPU at large N). Only relevant when an
-  `eigvecs_*` / `eigvals_*` item is requested.
+  `eigh`, faster on GPU at large N). Torch backend only, and only relevant when
+  an `eigvecs_*` / `eigvals_*` item is requested.
 - `opt['uneven']`: how missing data is handled. `'fast'` (default) is the
   NaN-aware whole-trial path (a trial counts only if every unit is present);
   `'missing'` handles per-unit missing data (a trial may have some units present
