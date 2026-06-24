@@ -1,15 +1,16 @@
 """Device-native end-to-end perform_gsn.
 
-For clean data (no NaN), this runs the entire GSN pipeline — noise+data
+For clean data (no NaN), this runs the entire GSN pipeline (noise+data
 covariance estimation, the held-out shrinkage selection, the biconvex
-optimization, and ncsnr — on a single backend (numpy or torch on
+optimization, and ncsnr) on a single backend (numpy or torch on
 CPU/CUDA/MPS) without round-tripping through host memory between stages.
 Reproduces the same dict that the rsa_noise_ceiling mode=1 path used to
 return.
 
-For uneven trials (NaN in data), we fall through to the existing
-rsa_noise_ceiling path — that branch has stochastic trial-subsetting
-that isn't worth reimplementing here.
+For uneven trials (NaN in data), opt['uneven'] selects the estimator:
+'fast' (default) is a NaN-aware whole-trial path, 'missing' handles per-unit
+missingness (see gsn.missing_units), and 'reference' delegates to the original
+rsa_noise_ceiling path.
 
 What changed vs. the previous calc_shrunken_covariance + rsa_noise_ceiling
 flow:
@@ -1192,13 +1193,17 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
 
     uneven = np.isnan(data).any()
     # opt['uneven'] selects how missing data is handled:
-    #   'fast'      (default) — whole-trial uneven path (a trial is valid only
+    #   'fast'      (default): whole-trial uneven path (a trial is valid only
     #               if every unit is present); fast NaN-aware estimation.
-    #   'reference' — original rsa_noise_ceiling delegation (parity oracle).
-    #   'missing' — missing-units estimation for per-UNIT missingness (a
+    #   'reference': original rsa_noise_ceiling delegation (parity oracle).
+    #   'missing':  missing-units estimation for per-UNIT missingness (a
     #               trial may have some units present and others missing); no
     #               good data discarded. See gsn.missing_units.
-    if uneven and opt.get('uneven', 'fast') == 'reference':
+    uneven_mode = opt.get('uneven', 'fast')
+    if uneven_mode not in ('fast', 'reference', 'missing'):
+        raise ValueError(
+            f"opt['uneven'] must be 'fast', 'reference', or 'missing'; got {uneven_mode!r}")
+    if uneven and uneven_mode == 'reference':
         return _delegate_uneven(data, opt)
 
     # Backend selection. 'auto' (default) uses the torch path when torch is
@@ -1224,7 +1229,7 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
         # backend='auto' with torch unavailable: silently demote to cpu+numpy.
         device_str = 'cpu'
 
-    if uneven and opt.get('uneven') == 'missing':
+    if uneven and uneven_mode == 'missing':
         if use_torch:
             from gsn.missing_units import run_missing_units_torch
             return run_missing_units_torch(data, opt, _resolve_device(device_str))

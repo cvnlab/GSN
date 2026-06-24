@@ -74,9 +74,17 @@ def perform_gsn(data, opt=None):
         data covariance. By doing so, we get a nice fully balanced data subset.
         Note that this approach introduces some stochasticity and
         ignores some portion of the data.
-      - The biconvex optimization procedure proceeds as usual. (For the 
-        weighting step, we calculate the equivalent "average number of trials" 
+      - The biconvex optimization procedure proceeds as usual. (For the
+        weighting step, we calculate the equivalent "average number of trials"
         that were actually used for noise covariance estimation.)
+
+    The handling of uneven/missing data is selected by opt['uneven']:
+      - 'fast' (default): NaN-aware whole-trial estimation (a trial counts only
+        if every unit is present).
+      - 'missing': per-unit missing-data estimation (a trial may have some units
+        present and others missing); no valid data is discarded.
+      - 'reference': the original rsa_noise_ceiling estimation path described
+        above (stochastic min-trial subsetting), kept as a parity oracle.
 
     Returns:
     results: A dictionary with the results.
