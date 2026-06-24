@@ -89,7 +89,7 @@ DEFAULT_RETURNS = ('cN', 'cS', 'cNb', 'cSb')
 def _normalize_returns(value):
     """Validate the opt['returns'] selector and return it as a set.
 
-    None  → the default (cSb, cNb, cdiff, three eigenbases).
+    None  → the default set DEFAULT_RETURNS (``'cN', 'cS', 'cNb', 'cSb'``).
     str   → single-item set.
     iter  → all items must be names from _VALID_RETURNS.
     """
@@ -1155,8 +1155,13 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
         Honors:
           - wantverbose (bool)
           - wantshrinkage (bool)
-          - device ({'cpu', 'cuda', 'mps', 'auto'}) — only relevant when
-            torch is installed; falls back to numpy on cpu otherwise.
+          - backend ({'auto', 'numpy', 'torch'}): which compute path to use.
+            'auto' (default) uses torch if installed, else numpy; 'numpy'
+            forces the reference numpy path; 'torch' forces the torch path
+            (errors if torch is missing).
+          - device ({'cpu', 'cuda', 'mps', 'auto'}): the torch device, used
+            only by the torch backend. Under backend='auto' with torch
+            unavailable, a non-cpu request falls back to cpu+numpy.
           - returns (iterable of str, optional): which cov matrices to
             include in the result dict. Default ``('cN', 'cS', 'cNb',
             'cSb')`` — the four matrices the legacy perform_gsn always
@@ -1172,8 +1177,8 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     Present iff named in ``opt['returns']``:
       cN, cS, cNb, cSb — each (N, N).
     """
-    if opt is None:
-        opt = {}
+    # Copy so we never mutate the caller's opt dict.
+    opt = {} if opt is None else dict(opt)
     opt.setdefault('wantverbose', 0)
     opt.setdefault('wantshrinkage', True)
 
@@ -1196,25 +1201,43 @@ def fast_perform_gsn(data: np.ndarray, opt: Optional[Dict] = None) -> Dict[str, 
     if uneven and opt.get('uneven', 'fast') == 'reference':
         return _delegate_uneven(data, opt)
 
+    # Backend selection. 'auto' (default) uses the torch path when torch is
+    # installed and the numpy path otherwise; 'numpy' / 'torch' force a path.
+    # The numpy path is the reference implementation; the torch path (cpu or
+    # gpu) is faster and is validated against numpy in tests/.
+    backend = opt.get('backend', 'auto')
+    if backend not in ('numpy', 'torch', 'auto'):
+        raise ValueError(
+            f"opt['backend'] must be 'numpy', 'torch', or 'auto'; got {backend!r}")
+    if backend == 'torch' and not _HAS_TORCH:
+        raise RuntimeError(
+            "opt['backend']='torch' but torch is not installed "
+            "(pip install gsn[fast]).")
+    use_torch = (backend == 'torch') or (backend == 'auto' and _HAS_TORCH)
+
     device_str = opt.get('device', 'cpu')
-    if device_str != 'cpu' and not _HAS_TORCH:
-        # Asked for GPU but no torch — silently demote to cpu+numpy.
+    if device_str != 'cpu' and not use_torch:
+        if backend == 'numpy':
+            raise ValueError(
+                "opt['device'] requests a non-cpu device but opt['backend']='numpy' "
+                "(the numpy backend is cpu-only).")
+        # backend='auto' with torch unavailable: silently demote to cpu+numpy.
         device_str = 'cpu'
 
     if uneven and opt.get('uneven') == 'missing':
-        if _HAS_TORCH:
+        if use_torch:
             from gsn.missing_units import run_missing_units_torch
             return run_missing_units_torch(data, opt, _resolve_device(device_str))
         from gsn.missing_units import run_missing_units_numpy
         return run_missing_units_numpy(data, opt)
 
     if uneven:
-        if _HAS_TORCH:
+        if use_torch:
             device = _resolve_device(device_str)
             return _run_torch_uneven(data, opt, device)
         return _run_numpy_uneven(data, opt)
 
-    if _HAS_TORCH:
+    if use_torch:
         device = _resolve_device(device_str)
         return _run_torch(data, opt, device)
     return _run_numpy(data, opt)

@@ -11,6 +11,12 @@ def perform_gsn(data, opt=None):
     opt (dict, optional): A dictionary with the following optional fields:
         wantverbose (bool, optional): Whether to print status statements. Default is True.
         wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is True.
+        backend (str, optional): Which compute path to use. 'auto' (default)
+            uses torch if it is installed and numpy otherwise; 'numpy' forces
+            the reference numpy/scipy path; 'torch' forces the torch path and
+            errors if torch is missing. The numpy path is the reference
+            implementation; the torch path (CPU or GPU) is faster and is
+            validated against numpy in the test suite.
         device (str, optional): Torch device for the batched shrinkage-NLL fast path.
             One of 'cpu' (default), 'cuda', 'mps', or 'auto' (picks cuda > mps > cpu by
             availability). 'cpu' is the right choice up to N ≈ 1000 voxels because
@@ -114,8 +120,8 @@ def perform_gsn(data, opt=None):
     # the legacy ('cN', 'cS', 'cNb', 'cSb') set so we don't need to
     # inject 'returns' here — passing opt straight through gives the
     # same result whether the caller omitted it or set it explicitly.
-    if opt is None:
-        opt = {}
+    # Copy so we never mutate the caller's opt dict.
+    opt = {} if opt is None else dict(opt)
     if 'wantverbose' not in opt or opt['wantverbose'] is None:
         opt['wantverbose'] = 1
     if 'wantshrinkage' not in opt or opt['wantshrinkage'] is None:

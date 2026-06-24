@@ -121,31 +121,27 @@ def time_python(data, method, repeats):
     """Time perform_gsn K times, return list of seconds.
 
     method is one of 'numpy', 'cpu', 'cuda', 'mps'.
-    'numpy' monkey-patches _HAS_TORCH=False so the numpy + scipy fallback
-    is exercised even when torch is installed.
+    'numpy' forces the numpy + scipy reference path via opt['backend']='numpy'
+    so it is exercised even when torch is installed.
     """
     force_numpy = (method == 'numpy')
     device = 'cpu' if force_numpy else method
+    backend = 'numpy' if force_numpy else 'torch'
     # Match the legacy main reference so the cross-backend wall-clock is
     # apples-to-apples; the default 'returns' adds three eighs that the
     # reference doesn't do.
-    opt = {'wantverbose': 0, 'device': device, 'returns': ['cSb', 'cNb']}
-    saved = bn._HAS_TORCH
-    if force_numpy:
-        bn._HAS_TORCH = False
-    try:
-        # Warmup — first call pays JIT / lazy-import / kernel-load costs.
+    opt = {'wantverbose': 0, 'backend': backend, 'device': device,
+           'returns': ['cSb', 'cNb']}
+    # Warmup: first call pays JIT / lazy-import / kernel-load costs.
+    perform_gsn(data, opt)
+    _sync_device(device)
+    times = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
         perform_gsn(data, opt)
         _sync_device(device)
-        times = []
-        for _ in range(repeats):
-            t0 = time.perf_counter()
-            perform_gsn(data, opt)
-            _sync_device(device)
-            times.append(time.perf_counter() - t0)
-        return times
-    finally:
-        bn._HAS_TORCH = saved
+        times.append(time.perf_counter() - t0)
+    return times
 
 
 # ---------------------------------------------------------------------------

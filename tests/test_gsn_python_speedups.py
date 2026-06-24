@@ -510,24 +510,16 @@ class TestPerformGsnIntegration:
 
     @pytest.mark.skipif(not _HAS_TORCH, reason='torch not installed')
     def test_cpu_vs_numpy_path_equivalence_through_perform_gsn(self):
-        """If a user installs gsn without torch they should get the same
-        result up to float-noise as someone with torch. We can't uninstall
-        torch mid-test, so we force the numpy path via batched_nll's
-        use_torch=False and compare against the default torch-cpu path.
+        """A user without torch (numpy path) should get the same result up to
+        float-noise as a user with torch (torch-cpu path). We force each path
+        explicitly via opt['backend'] so this genuinely exercises the numpy
+        reference path rather than comparing torch against torch.
         """
         rng = np.random.RandomState(1)
         data = rng.standard_normal((25, 80, 4))
 
-        res_torch = perform_gsn(data, {'wantverbose': 0, 'device': 'cpu'})
-
-        # Force numpy path by monkey-patching the dispatch flag
-        import gsn.batched_nll as bn
-        saved = bn._HAS_TORCH
-        try:
-            bn._HAS_TORCH = False
-            res_numpy = perform_gsn(data, {'wantverbose': 0})
-        finally:
-            bn._HAS_TORCH = saved
+        res_torch = perform_gsn(data, {'wantverbose': 0, 'backend': 'torch', 'device': 'cpu'})
+        res_numpy = perform_gsn(data, {'wantverbose': 0, 'backend': 'numpy'})
 
         for key in ('cSb', 'cNb', 'cS', 'cN', 'mnS', 'mnN', 'ncsnr'):
             diff = np.max(np.abs(res_torch[key] - res_numpy[key]))
