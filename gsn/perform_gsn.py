@@ -1,5 +1,4 @@
-import numpy as np
-from gsn.rsa_noise_ceiling import rsa_noise_ceiling
+from gsn.fast_perform_gsn import fast_perform_gsn
 
 def perform_gsn(data, opt=None):
     """
@@ -12,6 +11,46 @@ def perform_gsn(data, opt=None):
     opt (dict, optional): A dictionary with the following optional fields:
         wantverbose (bool, optional): Whether to print status statements. Default is True.
         wantshrinkage (bool, optional): Whether to use shrinkage in the estimation of covariance. Default is True.
+        backend (str, optional): Which compute path to use. 'auto' (default)
+            uses torch if it is installed and numpy otherwise; 'numpy' forces
+            the reference numpy/scipy path; 'torch' forces the torch path and
+            errors if torch is missing. The numpy path is the reference
+            implementation; the torch path (CPU or GPU) is faster and is
+            validated against numpy in the test suite.
+        device (str, optional): Torch device for the batched shrinkage-NLL fast path.
+            One of 'cpu' (default), 'cuda', 'mps', or 'auto' (picks cuda > mps > cpu by
+            availability). 'cpu' is the right choice up to N ≈ 1000 voxels because
+            GPU host↔device transfer dominates below that; 'cuda' / 'mps' open up
+            the GPU path for larger N. Requires torch (`pip install gsn[fast]`).
+        returns (iterable of str, optional): Which optional items to
+            include in the result dict. Default ``('cN', 'cS', 'cNb',
+            'cSb')`` — the four matrices the legacy perform_gsn always
+            returned. Pass an iterable like ``['cSb', 'cNb']`` if you
+            don't need cN / cS and want to save host memory at large N.
+            Valid names:
+              ``'cN', 'cS', 'cNb', 'cSb'``  — covariance matrices.
+              ``'eigvecs_signal', 'eigvals_signal'``      — eigh of cSb.
+              ``'eigvecs_difference', 'eigvals_difference'`` — eigh of
+                  ``cSb - cNb / ntrial`` (symmetric, generally indefinite).
+            Eigenvectors are columns, sorted by descending eigenvalue.
+            Pre-computing these here saves the dominant cost of PSN
+            at large N (eigh is O(N^3)) so downstream PSN calls can
+            consume ``opt['basis'] = <matrix>`` and skip basis
+            construction entirely.
+        eigh_device ({'host', 'device'}, optional): Where to run the
+            eigh that produces the eigvecs_* / eigvals_* returns.
+            Default ``'host'`` uses numpy.linalg.eigh, which matches
+            PSN's own eigh_descending_sym bit-for-bit (same LAPACK
+            call + same deterministic sign convention) — so the
+            cached eigvecs are a true drop-in for PSN's internal
+            'signal' / 'difference' branches. ``'device'`` runs the
+            eigh on the active torch device (typically much faster
+            on GPU at large N) but picks a different orthonormal
+            basis on cSb's zero-eigenvalue subspace; PSN's threshold
+            selection is sensitive to that, so downstream results
+            will diverge by a few percent from a PSN-internal eigh.
+            Only relevant
+            when an eigvecs_* / eigvals_* item is in ``returns``.
 
     Regarding uneven number of trials across conditions:
     - It is acceptable that different conditions may have different numbers
@@ -35,28 +74,41 @@ def perform_gsn(data, opt=None):
         data covariance. By doing so, we get a nice fully balanced data subset.
         Note that this approach introduces some stochasticity and
         ignores some portion of the data.
-      - The biconvex optimization procedure proceeds as usual. (For the 
-        weighting step, we calculate the equivalent "average number of trials" 
+      - The biconvex optimization procedure proceeds as usual. (For the
+        weighting step, we calculate the equivalent "average number of trials"
         that were actually used for noise covariance estimation.)
 
+    The handling of uneven/missing data is selected by opt['uneven']:
+      - 'fast' (default): NaN-aware whole-trial estimation (a trial counts only
+        if every unit is present).
+      - 'missing': per-unit missing-data estimation (a trial may have some units
+        present and others missing); no valid data is discarded.
+      - 'reference': the original rsa_noise_ceiling estimation path described
+        above (stochastic min-trial subsetting), kept as a parity oracle.
+
     Returns:
-    results: A dictionary with the results containing:
+    results: A dictionary with the results.
+
+    Always present (cheap; no opt-in needed):
         mnN - the estimated mean of the noise (1 x voxels)
-        cN - the raw estimated covariance of the noise (voxels x voxels)
-        cNb - the final estimated covariance after biconvex optimization
-        shrinklevelN - shrinkage level chosen for cN
-        shrinklevelD - shrinkage level chosen for the estimated data covariance
         mnS - the estimated mean of the signal (1 x voxels)
-        cS - the raw estimated covariance of the signal (voxels x voxels)
-        cSb - the final estimated covariance after biconvex optimization
         ncsnr - the 'noise ceiling SNR' estimate for each voxel (1 x voxels).
                 This is, for each voxel, the std dev of the estimated signal
                 distribution divided by the std dev of the estimated noise
                 distribution. Note that this is computed on the raw
                 estimated covariances. Also, note that we apply positive
                 rectification (to prevent non-sensical negative ncsnr values).
+        shrinklevelN - shrinkage level chosen for cN
+        shrinklevelD - shrinkage level chosen for the estimated data covariance
         numiters - the number of iterations used in the biconvex optimization.
                 0 means the first estimate was already positive semi-definite.
+
+    Present iff named in ``opt['returns']`` (see above for the default set
+    and how to override):
+        cN  - raw estimated covariance of the noise (voxels x voxels)
+        cS  - raw estimated covariance of the signal (voxels x voxels)
+        cNb - noise covariance after biconvex optimization (voxels x voxels)
+        cSb - signal covariance after biconvex optimization (voxels x voxels)
 
     History:
     - 2025/07/15 - add support for uneven number of trials
@@ -72,29 +124,15 @@ def perform_gsn(data, opt=None):
     results = perform_gsn(data)
     """
 
-        # Set default options if not provided
-    if opt is None:
-        opt = {}
+    # Backwards-compat defaults. fast_perform_gsn's DEFAULT_RETURNS is
+    # the legacy ('cN', 'cS', 'cNb', 'cSb') set so we don't need to
+    # inject 'returns' here — passing opt straight through gives the
+    # same result whether the caller omitted it or set it explicitly.
+    # Copy so we never mutate the caller's opt dict.
+    opt = {} if opt is None else dict(opt)
     if 'wantverbose' not in opt or opt['wantverbose'] is None:
         opt['wantverbose'] = 1
     if 'wantshrinkage' not in opt or opt['wantshrinkage'] is None:
         opt['wantshrinkage'] = 1
 
-    # Prepare opt for rsa_noise_ceiling.py
-    opt['mode'] = 1
-    opt['ncsims'] = 0
-    opt['wantfig'] = 0
-    if opt['wantshrinkage']:
-        opt['shrinklevels'] = np.linspace(0,1,51) # allow default shrinkage levels
-    else:
-        opt['shrinklevels'] = [1]  # force only full estimation
-
-    # Call the rsa_noise_ceiling function
-    # rsa_noise_ceiling returns a tuple where the third element is the results
-    results = rsa_noise_ceiling(data, opt)[2]
-
-    # Remove 'sc' and 'splitr' from results
-    results.pop('sc', None)
-    results.pop('splitr', None)
-
-    return results
+    return fast_perform_gsn(data, opt)

@@ -8,9 +8,6 @@ from gsn.calc_shrunken_covariance import calc_shrunken_covariance
 from gsn.construct_nearest_psd_covariance import construct_nearest_psd_covariance
 import scipy.stats as stats
 from scipy.spatial.distance import pdist
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
-from matplotlib.cm import get_cmap
 
 def rsa_noise_ceiling(data, opt = None):
     """
@@ -77,6 +74,9 @@ def rsa_noise_ceiling(data, opt = None):
             the faster the execution time, but the less accurate the results. Default: 10.
         maxsimnum (int, optional): The maximum number of simulations to perform for the
             data-splitting simulations. Default: 1000.
+        device (str, optional): Torch device for the batched shrinkage-NLL fast path
+            inside `calc_shrunken_covariance`. One of 'cpu' (default), 'cuda', 'mps',
+            or 'auto'. See `gsn.batched_nll.batched_shrunken_nll`.
 
     Notes:
     - If `comparefun` ever returns NaN, we automatically replace these cases with 0.
@@ -163,6 +163,10 @@ def rsa_noise_ceiling(data, opt = None):
     opt.setdefault('maxsimnum', 1000)
     opt.setdefault('shrinklevels', np.linspace(0,1,51))
     opt.setdefault('mode', 0)
+    # Torch device for the batched shrinkage-NLL fast path. 'cpu' is the
+    # safe default; 'cuda' / 'mps' / 'auto' light up GPU dispatch for
+    # large-N data. See gsn.batched_nll.batched_shrunken_nll.
+    opt.setdefault('device', 'cpu')
 
     # calc
     nvox = data.shape[0]
@@ -188,7 +192,8 @@ def rsa_noise_ceiling(data, opt = None):
     if opt['wantverbose']:
         print('Estimating noise covariance...', end='')
     mnN, cN, shrinklevelN, nllN = calc_shrunken_covariance(np.transpose(data, (2, 0, 1)),
-                                                         5, opt['shrinklevels'], 1)
+                                                         5, opt['shrinklevels'], 1,
+                                                         device=opt['device'])
     if opt['wantverbose']:
         print('done.')
 
@@ -224,7 +229,8 @@ def rsa_noise_ceiling(data, opt = None):
         ntrialBC = ntrial  # in the standard case, ntrial in biconvex optimization is just ntrial
     
     mnD, cD, shrinklevelD, nllD = calc_shrunken_covariance(np.mean(data, axis=2).T,
-                                                         5, opt['shrinklevels'], 1)
+                                                         5, opt['shrinklevels'], 1,
+                                                         device=opt['device'])
     if opt['wantverbose']:
         print('done.')
 
@@ -484,6 +490,14 @@ def rsa_noise_ceiling(data, opt = None):
     if opt['mode'] == 0 and opt['wantfig'] != 0:
         if opt['wantverbose']:
             print('Creating figure...')
+
+        # Lazy-import matplotlib only when actually drawing a figure.
+        # Top-level imports here would force a ~100ms matplotlib load on
+        # every `import gsn`, even for perform_gsn / mode=1 callers who
+        # never need a plot.
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import Normalize
+        from matplotlib.cm import get_cmap
 
         fig = plt.figure(figsize=(26, 20))  # Adjusted size for Python
         gs = fig.add_gridspec(4, 6)
