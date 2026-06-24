@@ -123,6 +123,7 @@ If you use GSN in your research, please cite the following paper:
 
 ## Change history
 
+* 2026/06/24 - Version 1.2 of GSN released. Faster, optionally GPU-accelerated Python backend (torch used automatically when installed, selectable via opt['backend']), with improved compatibility with [PSN (Partitioning Signal and Noise)](https://github.com/jacob-prince/PSN).
 * 2025/08/31 - Version 1.1 of GSN released. Accompanies the PLOS Computational Biology paper.
 * 2024/04/28 - Version 1.0 of GSN released. Accompanies the bioRxiv preprint.
 

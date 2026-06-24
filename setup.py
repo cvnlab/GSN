@@ -10,7 +10,7 @@ with open('README.md', encoding='utf-8') as readmefile:
 
 setup(
     name='GSN',
-    version='0.0.1',
+    version='1.2.0',
     description='Python GSN',
     url='https://github.com/cvnlab/GSN',
     long_description=long_description,
