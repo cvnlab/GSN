@@ -32,6 +32,12 @@ To install:
 pip install git+https://github.com/cvnlab/GSN.git
 ```
 
+For the optional fast / GPU-accelerated backend (PyTorch), install the `fast` extra:
+
+```bash
+pip install "gsn[fast] @ git+https://github.com/cvnlab/GSN.git"
+```
+
 Running the example scripts requires:
 
 - installing jupyter notebook or jupyter lab
@@ -60,6 +66,46 @@ If you would like to run these example scripts, the Python versions are availabl
 
 These notebooks contain a full walkthrough of the process of loading an example dataset, estimating signal and noise distributions using GSN, examining voxel-level noise ceiling estimates, computing the eigenspectrum of both signal and noise covariance matrices, and estimating dimensionality of each. 
 
+## Performance and GPU acceleration (Python)
+
+`perform_gsn` ships with a faster backend that is the default in the Python
+package. The NumPy/SciPy CPU path runs out of the box and remains the reference;
+an optional PyTorch path (CPU or GPU) accelerates the covariance and
+cross-validated shrinkage estimation, which is the runtime bottleneck at large
+numbers of units (thousands to tens of thousands). Torch is opt-in
+(`pip install gsn[fast]`); if it is not installed, a GPU request silently falls
+back to the NumPy CPU path.
+
+These behaviors are controlled through optional fields of the `opt` dict passed
+to `perform_gsn(data, opt)`:
+
+- `opt['device']`: `'cpu'` (default), `'cuda'`, `'mps'`, or `'auto'` (picks
+  cuda > mps > cpu by availability). `'cpu'` is the right choice up to ~1000
+  units, where GPU host-to-device transfer dominates; `'cuda'` / `'mps'` open up
+  the GPU path for larger N.
+- `opt['returns']`: which items to include in the result dict. The default is
+  the four covariance matrices the legacy `perform_gsn` always returned
+  (`'cN', 'cS', 'cNb', 'cSb'`). Request only what you need (e.g.
+  `['cSb', 'cNb']`) to save memory at large N, and optionally include the
+  eigendecomposition of `cSb` and of `cSb - cNb/ntrial`
+  (`'eigvecs_signal'`, `'eigvals_signal'`, `'eigvecs_difference'`,
+  `'eigvals_difference'`). Precomputing these lets [PSN (Partitioning Signal and
+  Noise)](https://github.com/jacob-prince/PSN), a companion toolbox that denoises
+  neural data using GSN's signal/noise covariance estimates, skip the O(N^3)
+  eigendecomposition.
+- `opt['eigh_device']`: `'host'` (default, NumPy `eigh`) or `'device'` (torch
+  `eigh`, faster on GPU at large N). Only relevant when an
+  `eigvecs_*` / `eigvals_*` item is requested.
+- `opt['uneven']`: how missing data is handled. `'fast'` (default) is the
+  NaN-aware whole-trial path (a trial counts only if every unit is present);
+  `'missing'` handles per-unit missing data (a trial may have some units present
+  and others missing) without discarding good data; `'reference'` delegates to
+  the original estimation path as a parity oracle.
+
+The NumPy path is the default everywhere and remains the reference
+implementation; the torch paths are validated against it in `tests/` (with
+relative tolerances and an argmin-agreement check on the GPU eigendecomposition).
+
 ## Additional information
 
 Terms of use: This content is licensed under a BSD 3-Clause License.
@@ -70,6 +116,7 @@ If you use GSN in your research, please cite the following paper:
 
 ## Change history
 
+* 2026/06/24 - Version 1.2 of GSN released. Faster, optionally GPU-accelerated Python backend (opt-in torch; NumPy CPU remains the default), with improved compatibility with [PSN (Partitioning Signal and Noise)](https://github.com/jacob-prince/PSN).
 * 2025/08/31 - Version 1.1 of GSN released. Accompanies the PLOS Computational Biology paper.
 * 2024/04/28 - Version 1.0 of GSN released. Accompanies the bioRxiv preprint.
 
