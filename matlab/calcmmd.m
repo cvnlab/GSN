@@ -23,6 +23,7 @@ function results = calcmmd(cSb,cNb,numpairs,noisepct)
 %     after normalization such that noise variances are 1
 %   <totvarnoiseALT> as sum of all noise variances (after normalization)
 %   <totvarsnrALT> as ratio of <totvarsignalALT> and <totvarnoiseALT>
+%   <med> as median Euclidean distance
 %   <mmd_uncorr> as median Mahalanobis distance (ignoring any noise correlations)
 %   <mmd> as a 1 x length(<noisepct>) vector with median Mahalanobis distances,
 %     whitening only the noise dimensions corresponding to <noisepct>
@@ -79,6 +80,18 @@ totvarsnr = totvarsignal / totvarnoise;
 % ED
 EDsignal = edfun(dSb);
 EDnoise = edfun(dNb);
+
+%% proceed to MED
+
+% draw random samples from signal distribution
+pts = mvnrnd(zeros(1,size(cSb,1)),cSb,2*numpairs)';  % dim x 2*N
+
+% reshape
+pts2 = reshape(pts,size(pts,1),[],2);  % dim x N x 2
+
+% calculate median Euclidean distance
+dist = sqrt(sum(diff(pts2,[],3).^2,1));
+med = median(dist);
 
 %% proceed to MMD
 
@@ -163,6 +176,7 @@ varstosave = ...
  'ncsnr' 'totvarsignal' 'totvarnoise' 'totvarsnr' ...
  'EDsignal' 'EDnoise' ...
  'totvarsignalALT' 'totvarnoiseALT' 'totvarsnrALT' ...
+ 'med' ...
  'mmd_uncorr' ...
  'mmd'};
 for p=1:length(varstosave)
