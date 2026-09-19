@@ -109,7 +109,7 @@ totvarnoiseALT = sum(diag(cNc));
 totvarsnrALT = totvarsignalALT / totvarnoiseALT;
 
 % draw random samples from signal distribution
-pts = mvnrnd(zeros(1,size(cSc,1)),cSc,2*numpairs)';  % dim x 2*N
+pts = pts ./ T;  % reuse the MED draw
 
 % reshape
 pts2 = reshape(pts,size(pts,1),[],2);  % dim x N x 2
