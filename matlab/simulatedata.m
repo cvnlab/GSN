@@ -57,8 +57,10 @@ align_alpha = p.Results.align_alpha;
 align_k = p.Results.align_k;
 random_seed = p.Results.random_seed;
 
-% Set random seed if provided
+% Set random seed if provided (restore the caller's global RNG state on exit)
 if ~isempty(random_seed)
+    prev_rng = rng;
+    restore_rng = onCleanup(@() rng(prev_rng));
     rng(random_seed, 'twister');
 end
 
