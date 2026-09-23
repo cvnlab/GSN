@@ -537,6 +537,27 @@ classdef TestPerformGSN < matlab.unittest.TestCase
             fprintf('Uneven trials error conditions test passed!\n');
         end
         
+        function testDoesNotDisturbGlobalRng(testCase)
+            % performgsn and simulatedata must not reset the caller's global RNG
+            fprintf('Testing that global RNG state is left untouched...\n');
+            
+            rng(900901, 'twister');
+            data = repmat(2 * randn(10, 8), [1, 1, 4]) + 0.5 * randn(10, 8, 4);
+            
+            rng('shuffle');
+            before = rng;
+            performgsn(data);
+            simulatedata('nvox', 10, 'ncond', 8, 'ntrial', 4, 'random_seed', 7);
+            after = rng;
+            
+            testCase.verifyEqual(after.Type, before.Type);
+            testCase.verifyEqual(after.Seed, before.Seed);
+            testCase.verifyEqual(after.State, before.State, ...
+                'GSN must not modify the global random number generator state');
+            
+            fprintf('Global RNG state test passed!\n');
+        end
+        
     end
     
     methods(TestMethodSetup)
