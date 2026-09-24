@@ -346,6 +346,22 @@ class TestBatchedNllParity:
         # NaN slots must match
         assert np.array_equal(np.isnan(nll_n), np.isnan(nll_t))
 
+    @pytest.mark.skipif(not _HAS_TORCH, reason='torch not installed')
+    def test_one_shrinkage_level_does_not_mutate_input(self):
+        """Keep a one-level Torch call from changing its input covariance."""
+        c = np.array([[2.0, 0.5], [0.5, 1.0]])
+        c_before = c.copy()
+        pts_zm = np.random.RandomState(0).standard_normal((100, 2))
+        shrinklevels = np.array([0.5])
+
+        expected = batched_shrunken_nll(
+            c.copy(), pts_zm, shrinklevels, use_torch=False)
+        actual = batched_shrunken_nll(
+            c, pts_zm, shrinklevels, use_torch=True)
+
+        np.testing.assert_array_equal(c, c_before)
+        np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12)
+
     def test_singular_slot_yields_nan(self):
         """Pick a c that's singular at alpha=1.0 but not at alpha<1.0."""
         N = 10
