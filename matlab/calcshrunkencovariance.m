@@ -190,7 +190,8 @@ for p=1:length(shrinklevels)
 
     % handle the regular case of all valid trials
     if ~isuneven
-      [pr,err] = calcmvgaussianpdf(squish(permute(zeromean(data(:,:,ii),1),[1 3 2]),2),mn,c2,1);  % manually deal with mean
+      % mean-subtracted trials have (t-1)/t of the noise variance; scale by sqrt(t/(t-1)) for t trials
+      [pr,err] = calcmvgaussianpdf(sqrt(size(data,1)/(size(data,1)-1))*squish(permute(zeromean(data(:,:,ii),1),[1 3 2]),2),mn,c2,1);  % manually deal with mean
 
     % handle very tricky case
     else
@@ -198,8 +199,9 @@ for p=1:length(shrinklevels)
       for q=1:length(ii)
         temp = data(:,:,ii(q));  % observations x variables
         validix = ~any(isnan(temp),2);  % observations x 1 indicating valid data
-        if sum(validix) > 1  % if we have at least two, let's use for the likelihood
-          datastore = cat(1,datastore,zeromean(temp(validix,:),1));
+        t = sum(validix);
+        if t > 1  % if we have at least two, let's use for the likelihood
+          datastore = cat(1,datastore,zeromean(temp(validix,:),1) * sqrt(t/(t-1)));
         end
       end
       assert(~isempty(datastore),'validation data did not have any conditions with at least two observations');

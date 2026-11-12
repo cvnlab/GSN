@@ -194,6 +194,8 @@ def _shrunken_cov_3d_numpy(data_3d, leaveout, shrinklevels):
     centered_val = val - val.mean(axis=0, keepdims=True)
     # (obs, var, val_size) -> (val_size * obs, var)
     pts_zm = centered_val.transpose(2, 0, 1).reshape(-1, var)
+    # mean-subtracted trials have (t-1)/t of the noise variance; scale by sqrt(t/(t-1)) for t trials
+    pts_zm = pts_zm * np.sqrt(obs / (obs - 1))
 
     nll = _numpy_loop(c, pts_zm, shrinklevels)
     if np.all(np.isnan(nll)):
@@ -402,9 +404,10 @@ def _shrunken_noise_cov_uneven_numpy(data_np, valid, validcnt, leaveout, shrinkl
     pts = []
     for q in ii:
         vix = valid[q]
-        if int(vix.sum()) > 1:
+        t = int(vix.sum())
+        if t > 1:
             vt = data_np[:, q, vix].T                   # (T_q, nvox)
-            pts.append(vt - vt.mean(axis=0))
+            pts.append((vt - vt.mean(axis=0)) * np.sqrt(t / (t - 1)))
     if not pts:                                         # match reference assertion
         raise AssertionError(
             'validation data did not have any conditions with at least two '
@@ -578,6 +581,7 @@ def _shrunken_cov_3d_torch(data_3d, leaveout, shrinklevels_np, device):
     del val
     pts_zm = centered_val.permute(2, 0, 1).reshape(-1, var)
     del centered_val
+    pts_zm = pts_zm * (obs / (obs - 1)) ** 0.5   # see _shrunken_cov_3d_numpy
 
     nll = _torch_batched(c, pts_zm, shrinklevels_np, device=device)
     del pts_zm
@@ -999,10 +1003,11 @@ def _shrunken_noise_cov_uneven_torch(data, valid, validcnt_f, valid_np,
     pts = []
     for q in perm[:val_size]:
         vix = valid_np[q]
-        if int(vix.sum()) > 1:
+        t = int(vix.sum())
+        if t > 1:
             cols = torch.from_numpy(np.flatnonzero(vix)).to(device)
             vt = data[:, int(q), :].index_select(1, cols).T   # (T_q, nvox)
-            pts.append(vt - vt.mean(dim=0))
+            pts.append((vt - vt.mean(dim=0)) * (t / (t - 1)) ** 0.5)
     if not pts:                                         # match reference assertion
         raise AssertionError(
             'validation data did not have any conditions with at least two '
