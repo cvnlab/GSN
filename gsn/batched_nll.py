@@ -267,7 +267,10 @@ def _torch_batched(c, pts_zm, shrinklevels, device='cpu'):
         #      diagonals — we'll fix the diagonals next),
         #   3) restore each row's diagonal to diag(c).
         # Peak transient is one chunk*N² tensor instead of three.
-        covs = c_t.unsqueeze(0).expand(end - start, N, N).contiguous()
+        # expand() may share the input's memory; the next line changes covs in place.
+        covs = c_t.unsqueeze(0).expand(end - start, N, N).clone(
+            memory_format=_torch.contiguous_format
+        )
         covs.mul_(alphas_chunk[:, None, None])
         # .clone() the expanded RHS: for N == 1 the expand view aliases memory
         # in the diagonal assignment, which torch refuses ("input and written-to
