@@ -186,16 +186,19 @@ def calc_shrunken_covariance(data,
     # numpy + scipy loop bit-equivalent to the original.
     if np.ndim(data) == 3:
         if not isuneven:
-            data_zeromean = data[:,:,ii] - np.mean(data[:,:,ii], 0)
+            # mean-subtracted trials have (t-1)/t of the noise variance; scale by sqrt(t/(t-1)) for t trials
+            t = data.shape[0]
+            data_zeromean = (data[:,:,ii] - np.mean(data[:,:,ii], 0)) * np.sqrt(t/(t-1))
             pts_zm = squish(np.transpose(data_zeromean, (0,2,1)), 2)
         else:
             datastore = np.array([], dtype=data.dtype).reshape(0, data.shape[1])
             for q in range(len(ii)):
                 temp = data[:,:,ii[q]]
                 validix = ~np.any(np.isnan(temp), axis=1)
-                if np.sum(validix) > 1:
+                t = np.sum(validix)
+                if t > 1:
                     valid_temp = temp[validix,:]
-                    temp_zeromean = valid_temp - np.mean(valid_temp, axis=0)
+                    temp_zeromean = (valid_temp - np.mean(valid_temp, axis=0)) * np.sqrt(t/(t-1))
                     datastore = np.vstack([datastore, temp_zeromean])
             assert datastore.size > 0, 'validation data did not have any conditions with at least two observations'
             pts_zm = datastore
